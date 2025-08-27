@@ -1,5 +1,3 @@
-#!/usr/bin/env python
-
 # Copyright 2024 The HuggingFace Inc. team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,19 +12,5 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from dataclasses import dataclass
-
-from ..config import TeleoperatorConfig
-
-
-@TeleoperatorConfig.register_subclass("piper_leader")
-@dataclass
-class PiperLeaderConfig(TeleoperatorConfig):
-    # Port to connect to the arm
-    port_left: str
-    port_right: str
-    target_frame_name: str = "gripper"
-    urdf_path: str = "local_assets/piper.urdf"
-
-    # Set to `True` for backward compatibility with previous policies/dataset
-    use_degrees: bool = False
+from .camera_dabai import OrbbecDabaiCamera
+from .configuration_dabai import OrbbecDabaiCameraConfig

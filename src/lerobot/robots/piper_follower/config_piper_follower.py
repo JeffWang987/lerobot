@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 
 from lerobot.cameras import CameraConfig
 from lerobot.cameras.realsense import RealSenseCameraConfig
+from lerobot.cameras.dabai import OrbbecDabaiCameraConfig
 
 from ..config import RobotConfig
 
@@ -28,6 +29,8 @@ class PiperFollowerConfig(RobotConfig):
     # Port to connect to the arm
     port_left: str
     port_right: str
+    target_frame_name: str = "gripper"
+    urdf_path: str = "local_assets/piper.urdf"
 
     disable_torque_on_disconnect: bool = True
 
@@ -39,12 +42,12 @@ class PiperFollowerConfig(RobotConfig):
     # cameras
     cameras: dict[str, CameraConfig] = field(
         default_factory=lambda: {
-            "head": RealSenseCameraConfig( # TODO check 头部相机是否能用realsense
-                type='intelrealsense',
+            "head": OrbbecDabaiCameraConfig( # TODO check 头部相机是否能用realsense
+                type='dabai',
                 serial_number_or_name="0123456789", # TODO Replace with actual SN
                 # use_depth=True,  # TODO check depth 使用
-                fps=30,
-                width=640,
+                fps=30, 
+                width=640,  # TODO check  dabai相机分辨率
                 height=480,
             ),
             "wrist_left": RealSenseCameraConfig(
@@ -78,14 +81,20 @@ class PiperFollowerEndEffectorConfig(PiperFollowerConfig):
 
     # Path to URDF file for kinematics
     # NOTE: It is highly recommended to use the urdf in the SO-ARM100 repo:
-    # https://github.com/TheRobotStudio/SO-ARM100/blob/main/Simulation/SO101/so101_new_calib.urdf
-    urdf_path: str | None = None
+    # https://github.com/agilexrobotics/piper_ros/tree/noetic/src/piper_description/urdf
+    urdf_path: str = "local_assets/piper.urdf"
 
     # End-effector frame name in the URDF
-    target_frame_name: str = "gripper_frame_link"
+    target_frame_name: str = "gripper"
 
     # Default bounds for the end-effector position (in meters)
-    end_effector_bounds: dict[str, list[float]] = field(
+    end_effector_bounds_left: dict[str, list[float]] = field(
+        default_factory=lambda: {
+            "min": [-1.0, -1.0, -1.0],  # min x, y, z
+            "max": [1.0, 1.0, 1.0],  # max x, y, z
+        }
+    )
+    end_effector_bounds_right: dict[str, list[float]] = field(
         default_factory=lambda: {
             "min": [-1.0, -1.0, -1.0],  # min x, y, z
             "max": [1.0, 1.0, 1.0],  # max x, y, z

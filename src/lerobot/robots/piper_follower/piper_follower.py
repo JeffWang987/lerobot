@@ -142,8 +142,13 @@ class PiperFollower(Robot):
 
         # Read arm position
         start = time.perf_counter()
-        obs_dict = self.bus.sync_read("Present_Position")
-        obs_dict = {f"{motor}.pos": val for motor, val in obs_dict.items()}
+        obs_dict_left = self.bus_left.sync_read("Present_Position")
+        obs_dict_left = {f"{motor}.pos": val for motor, val in obs_dict_left.items()}
+        obs_dict_right = self.bus_right.sync_read("Present_Position")
+        obs_dict_right = {f"{motor}.pos": val for motor, val in obs_dict_right.items()}
+        obs_dict = {}
+        obs_dict['left_arm'] = obs_dict_left # TODO check left or right写法是否正确
+        obs_dict['right_arm'] = obs_dict_right # TODO check left or right写法是否正确
         dt_ms = (time.perf_counter() - start) * 1e3
         logger.debug(f"{self} read state: {dt_ms:.1f}ms")
 

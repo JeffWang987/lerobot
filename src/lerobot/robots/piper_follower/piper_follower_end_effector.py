@@ -24,7 +24,9 @@ from lerobot.cameras import make_cameras_from_configs
 from lerobot.errors import DeviceNotConnectedError
 from lerobot.model.kinematics import RobotKinematics
 from lerobot.motors import Motor, MotorNormMode
-from lerobot.motors.feetech import FeetechMotorsBus
+from lerobot.motors.piper import (
+    PiperMotorsBus,
+)
 
 from . import PiperFollower
 from .config_piper_follower import PiperFollowerEndEffectorConfig
@@ -45,17 +47,30 @@ class PiperFollowerEndEffector(PiperFollower):
 
     def __init__(self, config: PiperFollowerEndEffectorConfig):
         super().__init__(config)
-        self.bus = FeetechMotorsBus(
-            port=self.config.port,
+        norm_mode_body = MotorNormMode.DEGREES if config.use_degrees else MotorNormMode.RANGE_M100_100 # TODO check 下含义
+        self.bus_left = PiperMotorsBus(
+            port=self.config.port_left,  # TODO 设置为"can0"和"can1"，还没找到在哪里设置
             motors={
-                "shoulder_pan": Motor(1, "sts3215", MotorNormMode.DEGREES),
-                "shoulder_lift": Motor(2, "sts3215", MotorNormMode.DEGREES),
-                "elbow_flex": Motor(3, "sts3215", MotorNormMode.DEGREES),
-                "wrist_flex": Motor(4, "sts3215", MotorNormMode.DEGREES),
-                "wrist_roll": Motor(5, "sts3215", MotorNormMode.DEGREES),
-                "gripper": Motor(6, "sts3215", MotorNormMode.RANGE_0_100),
+                "joint_1": Motor(1, "agilex_piper", norm_mode_body),  # TODO check norm
+                "joint_2": Motor(2, "agilex_piper", norm_mode_body),
+                "joint_3": Motor(3, "agilex_piper", norm_mode_body),
+                "joint_4": Motor(4, "agilex_piper", norm_mode_body),
+                "joint_5": Motor(5, "agilex_piper", norm_mode_body),
+                "joint_6": Motor(6, "agilex_piper", norm_mode_body),
+                "gripper": Motor(7, "agilex_piper", MotorNormMode.RANGE_0_100),  # TODO check norm
             },
-            calibration=self.calibration,
+        )
+        self.bus_right = PiperMotorsBus(
+            port=self.config.port_right,  # TODO 设置为"can0"和"can1"，还没找到在哪里设置
+            motors={
+                "joint_1": Motor(1, "agilex_piper", norm_mode_body),  # TODO check norm
+                "joint_2": Motor(2, "agilex_piper", norm_mode_body),
+                "joint_3": Motor(3, "agilex_piper", norm_mode_body),
+                "joint_4": Motor(4, "agilex_piper", norm_mode_body),
+                "joint_5": Motor(5, "agilex_piper", norm_mode_body),
+                "joint_6": Motor(6, "agilex_piper", norm_mode_body),
+                "gripper": Motor(7, "agilex_piper", MotorNormMode.RANGE_0_100),  # TODO check norm
+            },
         )
 
         self.cameras = make_cameras_from_configs(config.cameras)
@@ -75,10 +90,13 @@ class PiperFollowerEndEffector(PiperFollower):
         )
 
         # Store the bounds for end-effector position
-        self.end_effector_bounds = self.config.end_effector_bounds
+        self.end_effector_bounds_left = self.config.end_effector_bounds_left
+        self.end_effector_bounds_right = self.config.end_effector_bounds_right
 
-        self.current_ee_pos = None
-        self.current_joint_pos = None
+        self.current_ee_pos_left = None
+        self.current_joint_pos_left = None
+        self.current_ee_pos_right = None
+        self.current_joint_pos_right = None
 
     @property
     def action_features(self) -> dict[str, Any]:
@@ -88,8 +106,9 @@ class PiperFollowerEndEffector(PiperFollower):
         """
         return {
             "dtype": "float32",
-            "shape": (4,),
-            "names": {"delta_x": 0, "delta_y": 1, "delta_z": 2, "gripper": 3},
+            "shape": (8,),
+            # TODO check
+            "names": {"left_delta_x": 0, "left_delta_y": 1, "left_delta_z": 2, "left_gripper": 3, "right_delta_x": 4, "right_delta_y": 5, "right_delta_z": 6, "right_gripper": 7},
         }
 
     def send_action(self, action: dict[str, Any]) -> dict[str, Any]:
@@ -109,71 +128,107 @@ class PiperFollowerEndEffector(PiperFollower):
 
         # Convert action to numpy array if not already
         if isinstance(action, dict):
-            if all(k in action for k in ["delta_x", "delta_y", "delta_z"]):
+            if all(k in action for k in ["left_delta_x", "left_delta_y", "left_delta_z", "right_delta_x", "right_delta_y", "right_delta_z"]):
                 delta_ee = np.array(
                     [
-                        action["delta_x"] * self.config.end_effector_step_sizes["x"],
-                        action["delta_y"] * self.config.end_effector_step_sizes["y"],
-                        action["delta_z"] * self.config.end_effector_step_sizes["z"],
+                        action["left_delta_x"] * self.config.end_effector_step_sizes["x"],
+                        action["left_delta_y"] * self.config.end_effector_step_sizes["y"],
+                        action["left_delta_z"] * self.config.end_effector_step_sizes["z"],
+                        action["right_delta_x"] * self.config.end_effector_step_sizes["x"],
+                        action["right_delta_y"] * self.config.end_effector_step_sizes["y"],
+                        action["right_delta_z"] * self.config.end_effector_step_sizes["z"],
                     ],
                     dtype=np.float32,
                 )
-                if "gripper" not in action:
-                    action["gripper"] = [1.0]
-                action = np.append(delta_ee, action["gripper"])
+                if "left_gripper" not in action:
+                    action["left_gripper"] = [1.0]
+                if "right_gripper" not in action:
+                    action["right_gripper"] = [1.0]
+                action = np.append(delta_ee, action["left_gripper"])
+                action = np.append(action, action["right_gripper"])
             else:
                 logger.warning(
-                    f"Expected action keys 'delta_x', 'delta_y', 'delta_z', got {list(action.keys())}"
+                    f"Expected action keys 'left_delta_x', 'left_delta_y', 'left_delta_z', 'right_delta_x', 'right_delta_y', 'right_delta_z', got {list(action.keys())}"
                 )
-                action = np.zeros(4, dtype=np.float32)
+                action = np.zeros(8, dtype=np.float32)
 
-        if self.current_joint_pos is None:
+        if self.current_joint_pos_left is None and self.current_joint_pos_right is None:
             # Read current joint positions
-            current_joint_pos = self.bus.sync_read("Present_Position")
-            self.current_joint_pos = np.array([current_joint_pos[name] for name in self.bus.motors])
+            current_joint_pos_left = self.bus_left.sync_read("Present_Position")
+            current_joint_pos_right = self.bus_right.sync_read("Present_Position")
+            self.current_joint_pos_left = np.array([current_joint_pos_left[name] for name in self.bus_left.motors])
+            self.current_joint_pos_right = np.array([current_joint_pos_right[name] for name in self.bus_right.motors])
 
         # Calculate current end-effector position using forward kinematics
-        if self.current_ee_pos is None:
-            self.current_ee_pos = self.kinematics.forward_kinematics(self.current_joint_pos)
+        if self.current_ee_pos_left is None and self.current_ee_pos_right is None:
+            self.current_ee_pos_left = self.kinematics.forward_kinematics(self.current_joint_pos_left)
+            self.current_ee_pos_right = self.kinematics.forward_kinematics(self.current_joint_pos_right)
 
         # Set desired end-effector position by adding delta
-        desired_ee_pos = np.eye(4)
-        desired_ee_pos[:3, :3] = self.current_ee_pos[:3, :3]  # Keep orientation
+        desired_ee_pos_left = np.eye(4)
+        desired_ee_pos_left[:3, :3] = self.current_ee_pos_left[:3, :3]  # Keep orientation
+        desired_ee_pos_right = np.eye(4)
+        desired_ee_pos_right[:3, :3] = self.current_ee_pos_right
 
         # Add delta to position and clip to bounds
-        desired_ee_pos[:3, 3] = self.current_ee_pos[:3, 3] + action[:3]
-        if self.end_effector_bounds is not None:
-            desired_ee_pos[:3, 3] = np.clip(
-                desired_ee_pos[:3, 3],
-                self.end_effector_bounds["min"],
-                self.end_effector_bounds["max"],
+        desired_ee_pos_left[:3, 3] = self.current_ee_pos_left[:3, 3] + action[:3]
+        desired_ee_pos_right[:3, 3] = self.current_ee_pos_right[:3, 3] + action[4:7]
+        if self.end_effector_bounds_left is not None:
+            desired_ee_pos_left[:3, 3] = np.clip(
+                desired_ee_pos_left[:3, 3],
+                self.end_effector_bounds_left["min"],
+                self.end_effector_bounds_left["max"],
+            )
+        if self.end_effector_bounds_right is not None:
+            desired_ee_pos_right[:3, 3] = np.clip(
+                desired_ee_pos_right[:3, 3],
+                self.end_effector_bounds_right["min"],
+                self.end_effector_bounds_right["max"],
             )
 
         # Compute inverse kinematics to get joint positions
-        target_joint_values_in_degrees = self.kinematics.inverse_kinematics(
-            self.current_joint_pos, desired_ee_pos
+        target_joint_values_in_degrees_left = self.kinematics.inverse_kinematics(
+            self.current_joint_pos_left, desired_ee_pos_left
+        )
+        target_joint_values_in_degrees_right = self.kinematics.inverse_kinematics(
+            self.current_joint_pos_right, desired_ee_pos_right
         )
 
         # Create joint space action dictionary
-        joint_action = {
-            f"{key}.pos": target_joint_values_in_degrees[i] for i, key in enumerate(self.bus.motors.keys())
+        joint_action_left = {
+            f"{key}.pos": target_joint_values_in_degrees_left[i] for i, key in enumerate(self.bus_left.motors.keys())
+        }
+        joint_action_right = {
+            f"{key}.pos": target_joint_values_in_degrees_right[i] for i, key in enumerate(self.bus_right.motors.keys())
         }
 
         # Handle gripper separately if included in action
         # Gripper delta action is in the range 0 - 2,
         # We need to shift the action to the range -1, 1 so that we can expand it to -Max_gripper_pos, Max_gripper_pos
-        joint_action["gripper.pos"] = np.clip(
-            self.current_joint_pos[-1] + (action[-1] - 1) * self.config.max_gripper_pos,
+        # TODO check piper gripper 范围
+        joint_action_left["gripper.pos"] = np.clip(
+            self.current_joint_pos_left[-1] + (action[3] - 1) * self.config.max_gripper_pos,
+            5,
+            self.config.max_gripper_pos,
+        )
+        joint_action_right["gripper.pos"] = np.clip(
+            self.current_joint_pos_right[-1] + (action[7] - 1) * self.config.max_gripper_pos,
             5,
             self.config.max_gripper_pos,
         )
 
-        self.current_ee_pos = desired_ee_pos.copy()
-        self.current_joint_pos = target_joint_values_in_degrees.copy()
-        self.current_joint_pos[-1] = joint_action["gripper.pos"]
+        self.current_ee_pos_left = desired_ee_pos_left.copy()
+        self.current_joint_pos_left = target_joint_values_in_degrees_left.copy()
+        self.current_joint_pos_left[-1] = joint_action_left["gripper.pos"]
+        self.current_ee_pos_right = desired_ee_pos_right.copy()
+        self.current_joint_pos_right = target_joint_values_in_degrees_right.copy()
+        self.current_joint_pos_right[-1] = joint_action_right["gripper.pos"]
+
 
         # Send joint space action to parent class
-        return super().send_action(joint_action)
+        # return super().send_action(joint_action)
+        return super().send_action({**joint_action_left, **joint_action_right})
+    
 
     def get_observation(self) -> dict[str, Any]:
         if not self.is_connected:
@@ -181,8 +236,13 @@ class PiperFollowerEndEffector(PiperFollower):
 
         # Read arm position
         start = time.perf_counter()
-        obs_dict = self.bus.sync_read("Present_Position")
-        obs_dict = {f"{motor}.pos": val for motor, val in obs_dict.items()}
+        obs_dict_left = self.bus_left.sync_read("Present_Position")
+        obs_dict_left = {f"{motor}.pos": val for motor, val in obs_dict_left.items()}
+        obs_dict_right = self.bus_right.sync_read("Present_Position")
+        obs_dict_right = {f"{motor}.pos": val for motor, val in obs_dict_right.items()}
+        obs_dict = {}
+        obs_dict['left_arm'] = obs_dict_left # TODO check left or right写法是否正确
+        obs_dict['right_arm'] = obs_dict_right # TODO check left or right写法是否正确
         dt_ms = (time.perf_counter() - start) * 1e3
         logger.debug(f"{self} read state: {dt_ms:.1f}ms")
 
@@ -196,5 +256,7 @@ class PiperFollowerEndEffector(PiperFollower):
         return obs_dict
 
     def reset(self):
-        self.current_ee_pos = None
-        self.current_joint_pos = None
+        self.current_ee_pos_left = None
+        self.current_joint_pos_left = None
+        self.current_ee_pos_right = None
+        self.current_joint_pos_right = None
