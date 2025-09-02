@@ -1,157 +1,306 @@
-import time
+import logging
+import numpy as np
 from typing import Dict
-from piper_sdk import *
+# Piper SDK导入 - 使用V2版本接口
+from piper_sdk import C_PiperInterface_V2
 
-
-
-@MotorsBusConfig.register_subclass("piper")
-@dataclass
-class PiperMotorsBusConfig(MotorsBusConfig):
-    can_name: str
-    motors: dict[str, tuple[int, str]]
 
 class PiperMotorsBus:
     """
-        对Piper SDK的二次封装
+    Piper机械臂电机总线独立实现 - 使用V2接口
+
+    提供类似MotorsBus的接口，但直接使用Piper SDK V2的CAN总线通信
+    适配固件版本 V1.5-2 及以上（V1.6-5完全支持）
     """
-    def __init__(self, 
-                 config: PiperMotorsBusConfig):
-        self.piper = C_PiperInterface_V2(config.can_name)
-        self.piper.ConnectPort()
-        self.motors = config.motors
-        self.init_joint_position = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] # [6 joints + 1 gripper] * 0.0
-        self.safe_disable_position = [0.0, 0.0, 0.0, 0.0, 0.52, 0.0, 0.0]
-        self.pose_factor = 1000 # 单位 0.001mm
-        self.joint_factor = 57324.840764 # 1000*180/3.14， rad -> 度（单位0.001度）
+
+    def __init__(self, can_name: str, baud_rate: int = 1000000):
+        """
+        初始化Piper电机总线
+
+        Args:
+            can_name: CAN接口名称 (如 "can0", "can_left", "can_right")
+            baud_rate: CAN波特率 (通常为1000000)
+        """
+        self.can_name = can_name
+        self.baud_rate = baud_rate
+        self.interface = None
         self.is_connected = False
 
-    @property
-    def motor_names(self) -> list[str]:
-        return list(self.motors.keys())
+        # Piper机械臂关节定义 (基于常见6DOF+夹爪配置)
+        self.motors = [
+            "joint_1",  # 底座旋转
+            "joint_2",  # 肩部俯仰
+            "joint_3",  # 肘部俯仰
+            "joint_4",  # 腕部旋转
+            "joint_5",  # 腕部俯仰
+            "joint_6",  # 腕部滚转
+            "gripper"   # 夹爪
+        ]
+        self.NUM_ARM_JOINTS = 6  # 机械臂关节数(不含夹爪)
 
-    @property
-    def motor_models(self) -> list[str]:
-        return [model for _, model in self.motors.values()]
-
-    @property
-    def motor_indices(self) -> list[int]:
-        return [idx for idx, _ in self.motors.values()]
-
-
-    def connect(self, enable:bool) -> bool:
-        '''
-            使能机械臂并检测使能状态,尝试5s,如果使能超时则退出程序
-        '''
-        enable_flag = False
-        loop_flag = False
-        # 设置超时时间（秒）
-        timeout = 5
-        # 记录进入循环前的时间
-        start_time = time.time()
-        while not (loop_flag):
-            elapsed_time = time.time() - start_time
-            print(f"--------------------")
-            enable_list = []
-            enable_list.append(self.piper.GetArmLowSpdInfoMsgs().motor_1.foc_status.driver_enable_status)
-            enable_list.append(self.piper.GetArmLowSpdInfoMsgs().motor_2.foc_status.driver_enable_status)
-            enable_list.append(self.piper.GetArmLowSpdInfoMsgs().motor_3.foc_status.driver_enable_status)
-            enable_list.append(self.piper.GetArmLowSpdInfoMsgs().motor_4.foc_status.driver_enable_status)
-            enable_list.append(self.piper.GetArmLowSpdInfoMsgs().motor_5.foc_status.driver_enable_status)
-            enable_list.append(self.piper.GetArmLowSpdInfoMsgs().motor_6.foc_status.driver_enable_status)
-            if(enable):
-                enable_flag = all(enable_list)
-                self.piper.EnableArm(7)
-                self.piper.GripperCtrl(0,1000,0x01, 0)
-            else:
-                # move to safe disconnect position
-                enable_flag = any(enable_list)
-                self.piper.DisableArm(7)
-                self.piper.GripperCtrl(0,1000,0x02, 0)
-            print(f"使能状态: {enable_flag}")
-            print(f"--------------------")
-            if(enable_flag == enable):
-                loop_flag = True
-                enable_flag = True
-            else: 
-                loop_flag = False
-                enable_flag = False
-            # 检查是否超过超时时间
-            if elapsed_time > timeout:
-                print(f"超时....")
-                enable_flag = False
-                loop_flag = True
-                break
-            time.sleep(0.5)
-        resp = enable_flag
-        print(f"Returning response: {resp}")
-        self.is_connected = enable_flag
-
-        return resp
-    
-    def motor_names(self):
-        return
-
-    def set_calibration(self):
-        return
-    
-    def revert_calibration(self):
-        return
-
-    def apply_calibration(self):
-        """
-            移动到初始位置
-        """
-        self.write(target_joint=self.init_joint_position)
-
-    def write(self, target_joint:list):
-        """
-            Joint control
-            - target joint: in radians
-                joint_1 (float): 关节1角度 (-92000~92000) / 57324.840764
-                joint_2 (float): 关节2角度 -1300 ~ 90000 / 57324.840764
-                joint_3 (float): 关节3角度 2400 ~ -80000 / 57324.840764
-                joint_4 (float): 关节4角度 -90000~90000 / 57324.840764
-                joint_5 (float): 关节5角度 19000~-77000 / 57324.840764
-                joint_6 (float): 关节6角度 -90000~90000 / 57324.840764
-                gripper_range: 夹爪角度 0~0.08
-        """
-        joint_0 = round(target_joint[0]*self.joint_factor)
-        joint_1 = round(target_joint[1]*self.joint_factor)
-        joint_2 = round(target_joint[2]*self.joint_factor)
-        joint_3 = round(target_joint[3]*self.joint_factor)
-        joint_4 = round(target_joint[4]*self.joint_factor)
-        joint_5 = round(target_joint[5]*self.joint_factor)
-        gripper_range = round(target_joint[6]*1000*1000)
-
-        self.piper.MotionCtrl_2(0x01, 0x01, 100, 0x00) # joint control
-        self.piper.JointCtrl(joint_0, joint_1, joint_2, joint_3, joint_4, joint_5)
-        self.piper.GripperCtrl(abs(gripper_range), 1000, 0x01, 0) # 单位 0.001°
-    
-
-    def read(self) -> Dict:
-        """
-            - 机械臂关节消息,单位0.001度
-            - 机械臂夹爪消息
-        """
-        joint_msg = self.piper.GetArmJointMsgs()
-        joint_state = joint_msg.joint_state
-
-        gripper_msg = self.piper.GetArmGripperMsgs()
-        gripper_state = gripper_msg.gripper_state
-        
-        return {
-            "joint_1": joint_state.joint_1,
-            "joint_2": joint_state.joint_2,
-            "joint_3": joint_state.joint_3,
-            "joint_4": joint_state.joint_4,
-            "joint_5": joint_state.joint_5,
-            "joint_6": joint_state.joint_6,
-            "gripper": gripper_state.grippers_angle
+        # 关节限位 (弧度) - 基于Piper官方文档
+        self.joint_limits = {
+            "joint_1": (-2.6179, 2.6179),      # [-150°, 150°]
+            "joint_2": (0, 3.14),              # [0°, 180°]
+            "joint_3": (-2.967, 0),            # [-170°, 0°]
+            "joint_4": (-1.745, 1.745),        # [-100°, 100°]
+            "joint_5": (-1.22, 1.22),          # [-70°, 70°]
+            "joint_6": (-2.09439, 2.09439),    # [-120°, 120°]
+            "gripper": (0.0, 0.1)              # 夹爪开合度 [0-100mm]
         }
-    
-    def safe_disconnect(self):
-        """ 
-            Move to safe disconnect position
+
+        # 复位位置
+        if 'left' in self.can_name:
+            self.arm_reset_rad_pos = [
+                -0.00133514404296875, 0.00209808349609375, 0.01583099365234375,
+                -0.032616615295410156, -0.00286102294921875, 0.00095367431640625, 0.06
+            ]
+        elif 'right' in self.can_name:
+            self.arm_reset_rad_pos = [
+                -0.00133514404296875, 0.00438690185546875, 0.034523963928222656,
+                -0.053597450256347656, -0.00476837158203125, -0.00209808349609375, 0.06
+            ]
+
+        # TODO: 断开位置
+        # 当前状态缓存
+        self._current_positions = {motor: 0.0 for motor in self.motors}
+        self._current_velocities = {motor: 0.0 for motor in self.motors}
+        self._current_currents = {motor: 0.0 for motor in self.motors}
+
+        logging.info(f"Initialized PiperMotorsBus V2 with {len(self.motors)} motors")
+        logging.info(f"CAN interface: {can_name}, Baud rate: {baud_rate}")
+
+    def connect(self) -> bool:
+        """连接到Piper机械臂"""
+        if C_PiperInterface_V2 is None:
+            logging.error("Piper SDK V2 not available")
+            return False
+
+        try:
+            # 创建V2接口实例
+            self.interface = C_PiperInterface_V2(
+                can_name=self.can_name,
+                judge_flag=True,
+                can_auto_init=True,
+                dh_is_offset=0x01,              # 启用DH参数偏移
+                start_sdk_joint_limit=True,     # 启用软件关节限位
+                start_sdk_gripper_limit=True,    # 启用软件夹爪限位
+                logger_level=logging.WARNING,    # 日志配置
+                log_to_file=False,
+                log_file_path=None
+            )
+
+            # 连接CAN端口
+            result = self.interface.ConnectPort(
+                can_init=True,
+                piper_init=True,
+                start_thread=True
+            )
+
+            if self.interface.get_connect_status():
+                self.is_connected = True
+                logging.info(f"Successfully connected to Piper robot on {self.can_name}")
+                self._initialize_robot()
+                return True
+            else:
+                logging.error(f"Failed to connect to Piper robot on {self.can_name}")
+                return False
+
+        except Exception as e:
+            logging.error(f"Exception during Piper connection: {e}")
+            return False
+
+    def disconnect(self):
+        """断开连接"""
+        # TODO: 断开连接是否需要复位？
+        if self.interface and self.is_connected:
+            try:
+                self.interface.DisconnectPort()
+                self.is_connected = False
+                logging.info("Disconnected from Piper robot")
+            except Exception as e:
+                logging.error(f"Error disconnecting from Piper robot: {e}")
+
+    def _initialize_robot(self):
+        """初始化机器人状态"""
+        try:
+            # 使能机械臂 (V2版本方法)
+            self.interface.EnableArm(
+                motor_num=7,       # 7表示所有电机
+                enable_flag=0x02   # 0x02表示使能
+            )
+
+            # 设置控制模式为CAN命令控制
+            self.interface.ModeCtrl(
+                ctrl_mode=0x01,     # CAN命令控制模式
+                move_mode=0x01,     # MOVE J (关节)模式
+                                    # 0x00: MOVE P (Position)
+                                    # 0x01: MOVE J (Joint)
+                                    # 0x02: MOVE L (Linear)
+                                    # 0x03: MOVE C (Circular)
+                move_spd_rate_ctrl=50,  # 50%速度
+                is_mit_mode=0x00    # 位置-速度模式
+            )
+
+            # 初始化夹爪参数 (V2版本特有功能)
+            self.interface.GripperTeachingPendantParamConfig(
+                teaching_range_per=100,     # 100%行程系数
+                max_range_config=70,        # 小夹爪70mm最大行程
+                teaching_friction=1         # 示教摩擦力
+            )
+
+            # 使能夹爪
+            self.interface.GripperCtrl(
+                gripper_angle=0,
+                gripper_effort=1000,
+                gripper_code=0x01,      # 使能
+                set_zero=0x00
+            )
+
+            # 复位
+            if self.arm_reset_rad_pos:
+                self.sync_write("Goal_Position", {
+                    motor: pos for motor, pos in zip(self.motors, self.arm_reset_rad_pos)
+                })
+
+            # 读取初始位置
+            self._update_positions()
+
+            logging.info("Piper robot V2 initialized successfully")
+
+        except Exception as e:
+            logging.error(f"Failed to initialize Piper robot: {e}")
+
+    def _update_positions(self):
+        """更新关节位置"""
+        try:
+            # 获取关节角度信息 (返回0.001度单位)
+            joint_msgs = self.interface.GetArmJointMsgs()
+            if joint_msgs is not None:
+                # 转换为弧度并更新前6个关节
+                for i in range(self.NUM_ARM_JOINTS):
+                    motor_name = self.motors[i]
+                    # 从0.001度转换为弧度
+                    angle_deg = joint_msgs.joint_state[i] / 1000.0
+                    angle_rad = np.deg2rad(angle_deg)
+                    self._current_positions[motor_name] = angle_rad
+
+            # 获取夹爪信息
+            gripper_msgs = self.interface.GetArmGripperMsgs()
+            if gripper_msgs is not None:
+                # 夹爪位置单位为0.001mm，转换为米
+                gripper_pos_m = gripper_msgs.grippers_angle / 1000000.0  # 0.001mm -> m
+                self._current_positions["gripper"] = gripper_pos_m
+
+        except Exception as e:
+            logging.error(f"Failed to update positions: {e}")
+
+    def sync_read(self, parameter: str) -> Dict[str, float]:
         """
-        self.write(target_joint=self.safe_disable_position)
-        self.is_connected = False
+        同步读取参数
+
+        Args:
+            parameter: 参数名称 ("Present_Position")
+
+        Returns:
+            电机名称到值的字典
+        """
+        try:
+            if parameter == "Present_Position":
+                self._update_positions()
+                return self._current_positions.copy()
+
+            else:
+                logging.warning(f"Unsupported parameter: {parameter}")
+                return {}
+
+        except Exception as e:
+            logging.error(f"Failed to sync_read {parameter}: {e}")
+            return {}
+
+    def sync_write(self, parameter: str, values: Dict[str, float] | float):
+        """
+        同步写入参数
+
+        Args:
+            parameter: 参数名称 ("Goal_Position", "Torque_Enable")
+            values: 值字典或单个值
+        """
+        try:
+            if parameter == "Goal_Position":
+                if isinstance(values, dict):
+                    # 分离关节角度和夹爪
+                    joint_angles = []
+                    has_gripper_cmd = False
+                    gripper_pos = 0
+
+                    # 提取关节角度（弧度转换为0.001度）
+                    for i, motor in enumerate(self.motors[:-1]):  # 除了夹爪
+                        if motor in values:
+                            angle_rad = np.clip(values[motor],
+                                              self.joint_limits[motor][0],
+                                              self.joint_limits[motor][1])
+                            # 弧度转换为0.001度
+                            angle_millideg = int(np.rad2deg(angle_rad) * 1000)
+                            joint_angles.append(angle_millideg)
+                        else:
+                            # 使用当前位置
+                            current_rad = self._current_positions[motor]
+                            angle_millideg = int(np.rad2deg(current_rad) * 1000)
+                            joint_angles.append(angle_millideg)
+
+                    # 发送关节指令 (V2版本方法)
+                    if len(joint_angles) == self.NUM_ARM_JOINTS:
+                        self.interface.JointCtrl(
+                            joint_1=joint_angles[0],
+                            joint_2=joint_angles[1],
+                            joint_3=joint_angles[2],
+                            joint_4=joint_angles[3],
+                            joint_5=joint_angles[4],
+                            joint_6=joint_angles[5]
+                        )
+
+                    # 处理夹爪
+                    if "gripper" in values:
+                        gripper_pos_m = np.clip(values["gripper"],
+                                              self.joint_limits["gripper"][0],
+                                              self.joint_limits["gripper"][1])
+                        # 米转换为0.001mm
+                        gripper_angle_micro = int(gripper_pos_m * 1000000)
+
+                        self.interface.GripperCtrl(
+                            gripper_angle=gripper_angle_micro,
+                            gripper_effort=1000,        # 1N·m 默认力矩
+                            gripper_code=0x01,          # 使能
+                            set_zero=0x00               # 不设零点
+                        )
+
+            elif parameter == "Torque_Enable":
+                enable = int(values) if not isinstance(values, dict) else 1
+                if enable:
+                    self.interface.EnableArm(
+                        motor_num=7,       # 7表示所有电机
+                        enable_flag=0x02   # 0x02表示使能
+                    )
+                else:
+                    self.interface.DisableArm(
+                        motor_num=7,       # 7表示所有电机
+                        enable_flag=0x01   # 0x01表示失能
+                    )
+
+            else:
+                logging.warning(f"Unsupported write parameter: {parameter}")
+
+        except Exception as e:
+            logging.error(f"Failed to sync_write {parameter}: {e}")
+
+    def write(self, parameter: str, motor: str, value: float):
+        """
+        写入单个电机参数
+
+        Args:
+            parameter: 参数名称
+            motor: 电机名称
+            value: 值
+        """
+        self.sync_write(parameter, {motor: value})
