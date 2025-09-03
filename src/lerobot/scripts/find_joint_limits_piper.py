@@ -38,10 +38,12 @@ import numpy as np
 
 from lerobot.model.kinematics import RobotKinematics
 from lerobot.robots import (  # noqa: F401
+    piper_follower,
     RobotConfig,
     make_robot_from_config,
 )
 from lerobot.teleoperators import (  # noqa: F401
+    piper_leader,
     TeleoperatorConfig,
     make_teleoperator_from_config,
 )
