@@ -1,6 +1,7 @@
 import logging
 import numpy as np
-from typing import Dict
+from typing import Dict, Literal
+from traceback import format_exc
 # Piper SDK导入 - 使用V2版本接口
 from piper_sdk import C_PiperInterface_V2
 
@@ -13,7 +14,11 @@ class PiperMotorsBus:
     适配固件版本 V1.5-2 及以上（V1.6-5完全支持）
     """
 
-    def __init__(self, can_name: str, baud_rate: int = 1000000):
+    def __init__(
+        self, can_name: str,
+        baud_rate: int = 1000000,
+        motor_prefix: Literal['left', 'right'] = 'left'
+        ):
         """
         初始化Piper电机总线
 
@@ -36,7 +41,7 @@ class PiperMotorsBus:
             "joint_6",  # 腕部滚转
             "gripper"   # 夹爪
         ]
-        self.NUM_ARM_JOINTS = 6  # 机械臂关节数(不含夹爪)
+        self.motors = [f"{motor_prefix}_{motor}" for motor in self.motors]
 
         # 关节限位 (弧度) - 基于Piper官方文档
         self.joint_limits = {
@@ -46,7 +51,7 @@ class PiperMotorsBus:
             "joint_4": (-1.745, 1.745),        # [-100°, 100°]
             "joint_5": (-1.22, 1.22),          # [-70°, 70°]
             "joint_6": (-2.09439, 2.09439),    # [-120°, 120°]
-            "gripper": (0.0, 0.1)              # 夹爪开合度 [0-100mm]
+            "gripper": (0.0, 0.07)              # 夹爪开合度 [0-70mm]
         }
 
         # 复位位置
@@ -70,7 +75,12 @@ class PiperMotorsBus:
         logging.info(f"Initialized PiperMotorsBus V2 with {len(self.motors)} motors")
         logging.info(f"CAN interface: {can_name}, Baud rate: {baud_rate}")
 
-    def connect(self) -> bool:
+    def connect(
+        self,
+        start_sdk_joint_limit: bool = True,
+        start_sdk_gripper_limit: bool = True,
+        move_spd_rate_ctrl: int = 50
+    ) -> bool:
         """连接到Piper机械臂"""
         if C_PiperInterface_V2 is None:
             logging.error("Piper SDK V2 not available")
@@ -82,10 +92,10 @@ class PiperMotorsBus:
                 can_name=self.can_name,
                 judge_flag=True,
                 can_auto_init=True,
-                dh_is_offset=0x01,              # 启用DH参数偏移
-                start_sdk_joint_limit=True,     # 启用软件关节限位
-                start_sdk_gripper_limit=True,    # 启用软件夹爪限位
-                logger_level=logging.WARNING,    # 日志配置
+                dh_is_offset=0x01,  # 启用DH参数偏移
+                start_sdk_joint_limit=start_sdk_joint_limit,  # 启用软件关节限位
+                start_sdk_gripper_limit=start_sdk_gripper_limit,  # 启用软件夹爪限位
+                logger_level=logging.DEBUG,  # 日志配置
                 log_to_file=False,
                 log_file_path=None
             )
@@ -100,28 +110,32 @@ class PiperMotorsBus:
             if self.interface.get_connect_status():
                 self.is_connected = True
                 logging.info(f"Successfully connected to Piper robot on {self.can_name}")
-                self._initialize_robot()
+                self._initialize_robot(move_spd_rate_ctrl=move_spd_rate_ctrl)
                 return True
             else:
                 logging.error(f"Failed to connect to Piper robot on {self.can_name}")
                 return False
 
         except Exception as e:
-            logging.error(f"Exception during Piper connection: {e}")
+            logging.error(f"Exception during Piper connection: {format_exc()}")
             return False
 
-    def disconnect(self):
+    def disconnect(self, reset_pos: bool = False, disable_torque: bool = True):
         """断开连接"""
-        # TODO: 断开连接是否需要复位？
         if self.interface and self.is_connected:
             try:
+                if reset_pos:
+                    self.reset_pos()
+                if disable_torque:
+                    self.sync_write("Torque_Enable", 0)
                 self.interface.DisconnectPort()
                 self.is_connected = False
                 logging.info("Disconnected from Piper robot")
             except Exception as e:
-                logging.error(f"Error disconnecting from Piper robot: {e}")
 
-    def _initialize_robot(self):
+                logging.error(f"Error disconnecting from Piper robot: {format_exc()}")
+
+    def _initialize_robot(self, move_spd_rate_ctrl: int = 50):
         """初始化机器人状态"""
         try:
             # 使能机械臂 (V2版本方法)
@@ -138,7 +152,7 @@ class PiperMotorsBus:
                                     # 0x01: MOVE J (Joint)
                                     # 0x02: MOVE L (Linear)
                                     # 0x03: MOVE C (Circular)
-                move_spd_rate_ctrl=50,  # 50%速度
+                move_spd_rate_ctrl=move_spd_rate_ctrl,  # 50%速度
                 is_mit_mode=0x00    # 位置-速度模式
             )
 
@@ -158,10 +172,7 @@ class PiperMotorsBus:
             )
 
             # 复位
-            if self.arm_reset_rad_pos:
-                self.sync_write("Goal_Position", {
-                    motor: pos for motor, pos in zip(self.motors, self.arm_reset_rad_pos)
-                })
+            self.reset_pos()
 
             # 读取初始位置
             self._update_positions()
@@ -169,7 +180,16 @@ class PiperMotorsBus:
             logging.info("Piper robot V2 initialized successfully")
 
         except Exception as e:
-            logging.error(f"Failed to initialize Piper robot: {e}")
+            logging.error(f"Failed to initialize Piper robot: {format_exc()}")
+
+    def reset_pos(self):
+        if self.arm_reset_rad_pos:
+            self.sync_write("Goal_Position", {
+                    motor: pos for motor, pos in zip(self.motors, self.arm_reset_rad_pos)
+                })
+            logging.info(f"Robot {self.can_name} reset position")
+        else:
+            logging.warning(f"No reset position defined for this arm {self.can_name}")
 
     def _update_positions(self):
         """更新关节位置"""
@@ -178,22 +198,32 @@ class PiperMotorsBus:
             joint_msgs = self.interface.GetArmJointMsgs()
             if joint_msgs is not None:
                 # 转换为弧度并更新前6个关节
-                for i in range(self.NUM_ARM_JOINTS):
-                    motor_name = self.motors[i]
+                joint_values = [
+                    joint_msgs.joint_state.joint_1,
+                    joint_msgs.joint_state.joint_2,
+                    joint_msgs.joint_state.joint_3,
+                    joint_msgs.joint_state.joint_4,
+                    joint_msgs.joint_state.joint_5,
+                    joint_msgs.joint_state.joint_6,
+                ]
+
+                for i, joint_value in enumerate(joint_values):
                     # 从0.001度转换为弧度
-                    angle_deg = joint_msgs.joint_state[i] / 1000.0
+                    angle_deg = joint_value / 1000.0
                     angle_rad = np.deg2rad(angle_deg)
-                    self._current_positions[motor_name] = angle_rad
+                    self._current_positions[self.motors[i]] = angle_rad
 
             # 获取夹爪信息
             gripper_msgs = self.interface.GetArmGripperMsgs()
             if gripper_msgs is not None:
                 # 夹爪位置单位为0.001mm，转换为米
                 gripper_pos_m = gripper_msgs.grippers_angle / 1000000.0  # 0.001mm -> m
+                gripper_effort = gripper_msgs.grippers_effort  # 夹爪力矩 (0.1N·m单位)
+                gripper_status_code = gripper_msgs.status_code  # 夹爪状态码
                 self._current_positions["gripper"] = gripper_pos_m
 
         except Exception as e:
-            logging.error(f"Failed to update positions: {e}")
+            logging.error(f"Failed to update positions: {format_exc()}")
 
     def sync_read(self, parameter: str) -> Dict[str, float]:
         """
@@ -204,6 +234,12 @@ class PiperMotorsBus:
 
         Returns:
             电机名称到值的字典
+            {
+                "joint_1": ...,
+                "joint_2": ...,
+                ...
+                "gripper": ...
+            }
         """
         try:
             if parameter == "Present_Position":
@@ -215,7 +251,7 @@ class PiperMotorsBus:
                 return {}
 
         except Exception as e:
-            logging.error(f"Failed to sync_read {parameter}: {e}")
+            logging.error(f"Failed to sync_read {parameter}: {format_exc()}")
             return {}
 
     def sync_write(self, parameter: str, values: Dict[str, float] | float):
@@ -225,6 +261,15 @@ class PiperMotorsBus:
         Args:
             parameter: 参数名称 ("Goal_Position", "Torque_Enable")
             values: 值字典或单个值
+            e.g.
+            parameter="Goal_Position"
+            values = {
+                "joint_1": 0.5, # in rad
+                "joint_2": 0.5,
+                ...
+                "gripper": 0.1 # in meters, optional
+            }
+
         """
         try:
             if parameter == "Goal_Position":
@@ -235,7 +280,7 @@ class PiperMotorsBus:
                     gripper_pos = 0
 
                     # 提取关节角度（弧度转换为0.001度）
-                    for i, motor in enumerate(self.motors[:-1]):  # 除了夹爪
+                    for motor in self.motors[:-1]:  # 除了夹爪
                         if motor in values:
                             angle_rad = np.clip(values[motor],
                                               self.joint_limits[motor][0],
@@ -250,15 +295,14 @@ class PiperMotorsBus:
                             joint_angles.append(angle_millideg)
 
                     # 发送关节指令 (V2版本方法)
-                    if len(joint_angles) == self.NUM_ARM_JOINTS:
-                        self.interface.JointCtrl(
-                            joint_1=joint_angles[0],
-                            joint_2=joint_angles[1],
-                            joint_3=joint_angles[2],
-                            joint_4=joint_angles[3],
-                            joint_5=joint_angles[4],
-                            joint_6=joint_angles[5]
-                        )
+                    self.interface.JointCtrl(
+                        joint_1=joint_angles[0],
+                        joint_2=joint_angles[1],
+                        joint_3=joint_angles[2],
+                        joint_4=joint_angles[3],
+                        joint_5=joint_angles[4],
+                        joint_6=joint_angles[5]
+                    )
 
                     # 处理夹爪
                     if "gripper" in values:
@@ -292,7 +336,7 @@ class PiperMotorsBus:
                 logging.warning(f"Unsupported write parameter: {parameter}")
 
         except Exception as e:
-            logging.error(f"Failed to sync_write {parameter}: {e}")
+            logging.error(f"Failed to sync_write {parameter}: {format_exc()}")
 
     def write(self, parameter: str, motor: str, value: float):
         """

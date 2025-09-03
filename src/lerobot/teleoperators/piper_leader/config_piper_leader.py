@@ -23,10 +23,6 @@ from ..config import TeleoperatorConfig
 @dataclass
 class PiperLeaderConfig(TeleoperatorConfig):
     # Port to connect to the arm
-    port_left: str
-    port_right: str
-    target_frame_name: str = "gripper"
-    urdf_path: str = "local_assets/piper.urdf"
-
-    # Set to `True` for backward compatibility with previous policies/dataset
-    use_degrees: bool = False
+    can_name_left: str = "can_left"        # 左臂CAN接口名称
+    can_name_right: str = "can_right"       # 右臂CAN接口名称
+    baud_rate: int = 1000000          # CAN波特率 1Mbps

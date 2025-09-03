@@ -14,6 +14,5 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .config_piper_follower import PiperFollowerConfig, PiperFollowerEndEffectorConfig
+from .config_piper_follower import PiperFollowerConfig
 from .piper_follower import PiperFollower
-from .piper_follower_end_effector import PiperFollowerEndEffector

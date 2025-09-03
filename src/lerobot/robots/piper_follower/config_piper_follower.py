@@ -16,8 +16,9 @@
 
 from dataclasses import dataclass, field
 
+# TODO
+from lerobot import cameras
 from lerobot.cameras import CameraConfig
-from lerobot.cameras.realsense import RealSenseCameraConfig
 from lerobot.cameras.dabai import OrbbecDabaiCameraConfig
 
 from ..config import RobotConfig
@@ -26,87 +27,32 @@ from ..config import RobotConfig
 @RobotConfig.register_subclass("piper_follower")
 @dataclass
 class PiperFollowerConfig(RobotConfig):
-    # Port to connect to the arm
-    port_left: str
-    port_right: str
-    target_frame_name: str = "gripper"
-    urdf_path: str = "local_assets/piper.urdf"
+    """Piper双臂机器人配置"""
 
-    disable_torque_on_disconnect: bool = True
+    # 双臂CAN接口配置
+    can_name_left: str = "can_left"        # 左臂CAN接口名称
+    can_name_right: str = "can_right"       # 右臂CAN接口名称
+    baud_rate: int = 1000000          # CAN波特率 1Mbps
+    urdf_path: str = "local_assets/piper.urdf" # 机器人运动学模型
+    target_frame_name: str = "gripper"  # urdf中末端执行器frame name TODO: check
+    # 安全配置
+    reset_pos_on_disconnect: bool = True  # 断开连接时是否复位
+    disable_torque_on_disconnect: bool = True  # 断开连接时是否失能
+    max_relative_target: dict[str, float] | None = None  # 最大相对位移限制
+    # 见src/lerobot/robots/utils.py line 76
+    """
+    max_relative_target = {
+    "joint_1": 0.5,    # joint_1单次最大移动 0.5rad
+    "joint_2": 0.2,    # joint_2单次最大移动 0.2rad
+    ...
+    "gripper": 0.05,    # gripper单次最大移动 0.05m
+    }
+    """
 
-    # `max_relative_target` limits the magnitude of the relative positional target vector for safety purposes.
-    # Set this to a positive scalar to have the same value for all motors, or a list that is the same length as
-    # the number of motors in your follower arms.
-    max_relative_target: int | None = None
+    # V2版本特有配置
+    start_sdk_joint_limit: bool = True      # 启用软件关节限位
+    start_sdk_gripper_limit: bool = True    # 启用软件夹爪限位
+    move_spd_rate_ctrl: int = 50            # 运动速度百分比
 
-    # cameras
-    cameras: dict[str, CameraConfig] = field(
-        default_factory=lambda: {
-            "head": OrbbecDabaiCameraConfig( # TODO check 头部相机是否能用realsense
-                type='dabai',
-                serial_number_or_name="0123456789", # TODO Replace with actual SN
-                # use_depth=True,  # TODO check depth 使用
-                fps=30, 
-                width=640,  # TODO check  dabai相机分辨率
-                height=480,
-            ),
-            "wrist_left": RealSenseCameraConfig(
-                type='intelrealsense',
-                serial_number_or_name="0123456789", # Replace with actual SN
-                # use_depth=True,
-                fps=30,
-                width=640,
-                height=480,
-            ),
-            "wrist_right": RealSenseCameraConfig(
-                type='intelrealsense',
-                serial_number_or_name="0123456789", # Replace with actual SN
-                # use_depth=True,
-                fps=30,
-                width=640,
-                height=480,
-            ),
-        }
-    )
-
-
-    # Set to `True` for backward compatibility with previous policies/dataset
-    use_degrees: bool = False
-
-
-@RobotConfig.register_subclass("piper_follower_end_effector")
-@dataclass
-class PiperFollowerEndEffectorConfig(PiperFollowerConfig):
-    """Configuration for the PiperFollowerEndEffector robot."""
-
-    # Path to URDF file for kinematics
-    # NOTE: It is highly recommended to use the urdf in the SO-ARM100 repo:
-    # https://github.com/agilexrobotics/piper_ros/tree/noetic/src/piper_description/urdf
-    urdf_path: str = "local_assets/piper.urdf"
-
-    # End-effector frame name in the URDF
-    target_frame_name: str = "gripper"
-
-    # Default bounds for the end-effector position (in meters)
-    end_effector_bounds_left: dict[str, list[float]] = field(
-        default_factory=lambda: {
-            "min": [-1.0, -1.0, -1.0],  # min x, y, z
-            "max": [1.0, 1.0, 1.0],  # max x, y, z
-        }
-    )
-    end_effector_bounds_right: dict[str, list[float]] = field(
-        default_factory=lambda: {
-            "min": [-1.0, -1.0, -1.0],  # min x, y, z
-            "max": [1.0, 1.0, 1.0],  # max x, y, z
-        }
-    )
-
-    max_gripper_pos: float = 50
-
-    end_effector_step_sizes: dict[str, float] = field(
-        default_factory=lambda: {
-            "x": 0.02,
-            "y": 0.02,
-            "z": 0.02,
-        }
-    )
+    # 相机配置 TODO
+    cameras: dict[str, CameraConfig] = field(default_factory=dict)

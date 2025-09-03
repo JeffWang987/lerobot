@@ -16,10 +16,8 @@
 
 import logging
 import time
-from typing import Any
-
+from traceback import format_exc
 from lerobot.errors import DeviceAlreadyConnectedError, DeviceNotConnectedError
-from lerobot.motors import Motor, MotorCalibration, MotorNormMode
 from lerobot.motors.piper import (
     PiperMotorsBus,
 )
@@ -31,107 +29,145 @@ logger = logging.getLogger(__name__)
 
 
 class PiperLeader(Teleoperator):
-    """
-    [Piper Leader Arm](https://github.com/agilexrobotics/piper_sdk)
-    """
+    """Piper双臂领导机器人实现 - 继承Teleoperator抽象基类"""
 
+    # 必须的类属性
     config_class = PiperLeaderConfig
     name = "piper_leader"
 
-    def __init__(self, config: PiperLeaderConfig):
-        super().__init__(config)
+    def __init__(self, config: PiperLeaderConfig, **kwargs):
+        super().__init__(config, **kwargs)
+
         self.config = config
-        norm_mode_body = MotorNormMode.DEGREES if config.use_degrees else MotorNormMode.RANGE_M100_100 # TODO check 下含义
+
+        # 初始化双臂电机总线
         self.bus_left = PiperMotorsBus(
-            port=self.config.port_left,  # TODO 设置为"can0"和"can1"，还没找到在哪里设置
-            motors={
-                "joint_1": Motor(1, "agilex_piper", norm_mode_body),  # TODO check norm
-                "joint_2": Motor(2, "agilex_piper", norm_mode_body),
-                "joint_3": Motor(3, "agilex_piper", norm_mode_body),
-                "joint_4": Motor(4, "agilex_piper", norm_mode_body),
-                "joint_5": Motor(5, "agilex_piper", norm_mode_body),
-                "joint_6": Motor(6, "agilex_piper", norm_mode_body),
-                "gripper": Motor(7, "agilex_piper", MotorNormMode.RANGE_0_100),  # TODO check norm
-            },
+            can_name=config.can_name_left,
+            baud_rate=config.baud_rate,
+            motor_prefix='left'
         )
         self.bus_right = PiperMotorsBus(
-            port=self.config.port_right,  # TODO 设置为"can0"和"can1"，还没找到在哪里设置
-            motors={
-                "joint_1": Motor(1, "agilex_piper", norm_mode_body),  # TODO check norm
-                "joint_2": Motor(2, "agilex_piper", norm_mode_body),
-                "joint_3": Motor(3, "agilex_piper", norm_mode_body),
-                "joint_4": Motor(4, "agilex_piper", norm_mode_body),
-                "joint_5": Motor(5, "agilex_piper", norm_mode_body),
-                "joint_6": Motor(6, "agilex_piper", norm_mode_body),
-                "gripper": Motor(7, "agilex_piper", MotorNormMode.RANGE_0_100),  # TODO check norm
-            },
+            can_name=config.can_name_right,
+            baud_rate=config.baud_rate,
+            motor_prefix='right'
         )
 
+        logging.info("PiperLeader (dual-arm) initialized")
+
+    # 必须实现的抽象属性
     @property
     def action_features(self) -> dict[str, type]:
-        # return {f"{motor}.pos": float for motor in self.bus.motors}
-        left_motors =  {f"{motor}.pos": float for motor in self.bus_left.motors}
-        right_motors =  {f"{motor}.pos": float for motor in self.bus_right.motors}
-        return {**left_motors, **right_motors} # TODO check left or right写法是否正确
+        """动作特征描述 - Teleoperator抽象属性"""
+        left_motors = {f"{motor}.pos": float for motor in self.bus_left.motors}
+        right_motors = {f"{motor}.pos": float for motor in self.bus_right.motors}
+        return {**left_motors, **right_motors}
 
     @property
     def feedback_features(self) -> dict[str, type]:
-        return {}
+        """反馈特征描述 - Teleoperator抽象属性"""
+        return {}  # Piper暂不支持力反馈
 
     @property
     def is_connected(self) -> bool:
+        """检查连接状态 - Teleoperator抽象属性"""
         return self.bus_left.is_connected and self.bus_right.is_connected
 
+    @property
+    def is_calibrated(self) -> bool:
+        """检查校准状态"""
+        return self.is_connected
+
+    # 必须实现的抽象方法
     def connect(self, calibrate: bool = True) -> None:
+        """连接到双臂领导机器人 - Teleoperator抽象方法"""
         if self.is_connected:
             raise DeviceAlreadyConnectedError(f"{self} already connected")
 
-        self.bus_left.connect(enable=True)
-        self.bus_right.connect(enable=True)
-        self.calibrate()
-        logger.info(f"{self} connected.")
-        
-    def disconnect(self) -> None:
-        if not self.is_connected:
-            raise DeviceNotConnectedError(f"{self} is not connected.")
+        # 连接双臂
+        left_success = self.bus_left.connect()
+        right_success = self.bus_right.connect()
 
-        self.bus_left.safe_disconnect()
-        self.bus_right.safe_disconnect()
-        self.bus_left.connect(enable=False)
-        self.bus_right.connect(enable=False)
+        if not (left_success and right_success):
+            raise ConnectionError(f"Failed to connect to {self}")
 
-        logger.info(f"{self} disconnected.")
-    
+        if not self.is_calibrated and calibrate:
+            self.calibrate()
+
+        self.configure()
+        logging.info(f"{self} connected.")
+
     def calibrate(self) -> None:
-        """move piper to the home position"""
-        if not self.is_connected:
-            raise ConnectionError()
-        
-        self.bus_left.apply_calibration()
-        self.bus_right.apply_calibration()
+        """校准领导机器人 - Teleoperator抽象方法"""
+        logging.info(f"Calibrating {self}")
+        try:
+            pass  # Piper 主臂双臂暂不需要额外校准
+            # # 设置为主从模式 TODO: 是否需要配置？
+            # if self.config.enable_master_slave:
+            #     self.bus_left.interface.MasterSlaveConfig(
+            #         linkage_config=self.config.linkage_config,
+            #         feedback_offset=0x00,
+            #         ctrl_offset=0x00,
+            #         linkage_offset=0x00
+            #     )
+            #     self.bus_right.interface.MasterSlaveConfig(
+            #         linkage_config=self.config.linkage_config,
+            #         feedback_offset=0x00,
+            #         ctrl_offset=0x00,
+            #         linkage_offset=0x00
+            #     )
+
+            logging.info("Dual-arm leader calibration completed")
+        except Exception as e:
+            logging.error(f"Leader calibration failed: {format_exc()}")
+
+    def configure(self) -> None:
+        """配置领导机器人 - Teleoperator抽象方法"""
+        logging.info(f"Configuring {self}")
+        # Piper 机械臂的配置在 bus.connect() 中的 _initialize_robot() 已完成
+        # 这里可以添加额外的双臂协调配置
+        pass
 
     def get_action(self) -> dict[str, float]:
-        start = time.perf_counter()
-        action_left = self.bus_left.sync_read("Present_Position")
-        action_right = self.bus_right.sync_read("Present_Position")
-        action_left = {f"{motor}.pos": val for motor, val in action_left.items()}
-        action_right = {f"{motor}.pos": val for motor, val in action_right.items()}
-        dt_ms = (time.perf_counter() - start) * 1e3
-        logger.debug(f"{self} read action: {dt_ms:.1f}ms")
-        return {**action_left, **action_right} # TODO check 能否接收到
-
-    def send_action(self, action: dict[str, Any]) -> dict[str, Any]:
-        """Write the predicted actions from policy to the motors"""
+        """获取遥操控动作 - Teleoperator抽象方法"""
         if not self.is_connected:
             raise DeviceNotConnectedError(f"{self} is not connected.")
 
-        # send to motors, torch to list
-        target_joints = action.tolist()
-        self.bus_left.write(target_joints[:7])
-        self.bus_right.write(target_joints[7:])
+        try:
+            start = time.perf_counter()
 
-        return action
+            # 读取双臂位置作为动作
+            left_action = self.bus_left.sync_read("Present_Position")
+            right_action = self.bus_right.sync_read("Present_Position")
+
+            # 格式化动作
+            action = {}
+            for motor_name in self.bus_left.motors:
+                action[f"{motor_name}.pos"] = left_action.get(motor_name, 0.0)
+            for motor_name in self.bus_right.motors:
+                action[f"{motor_name}.pos"] = right_action.get(motor_name, 0.0)
+
+            dt_ms = (time.perf_counter() - start) * 1e3
+            logging.debug(f"{self} read dual-arm action: {dt_ms:.1f}ms")
+
+            return action
+
+        except Exception as e:
+            logging.error(f"Failed to get leader action: {format_exc()}")
+            return {f"{motor}.pos": 0.0 for motor in self.bus_left.motors} | \
+                   {f"{motor}.pos": 0.0 for motor in self.bus_right.motors}
+
     def send_feedback(self, feedback: dict[str, float]) -> None:
-        # TODO(rcadene, aliberts): Implement force feedback
-        raise NotImplementedError
+        """发送反馈 - Teleoperator抽象方法"""
+        # Piper机械臂暂不支持力反馈
+        raise NotImplementedError("Piper does not support force feedback yet")
+
+    def disconnect(self) -> None:
+        """断开连接 - Teleoperator抽象方法"""
+        if not self.is_connected:
+            raise DeviceNotConnectedError(f"{self} is not connected.")
+
+        self.bus_left.disconnect()
+        self.bus_right.disconnect()
+
+        logging.info(f"{self} disconnected.")
 
