@@ -53,6 +53,7 @@ class PiperMotorsBus:
             "joint_6": (-2.09439, 2.09439),    # [-120°, 120°]
             "gripper": (0.0, 0.07)              # 夹爪开合度 [0-70mm]
         }
+        self.joint_limits = {f"{motor_prefix}_{k}": v for k, v in self.joint_limits.items()}
 
         # 复位位置
         if 'left' in self.can_name:
@@ -217,9 +218,9 @@ class PiperMotorsBus:
             gripper_msgs = self.interface.GetArmGripperMsgs()
             if gripper_msgs is not None:
                 # 夹爪位置单位为0.001mm，转换为米
-                gripper_pos_m = gripper_msgs.grippers_angle / 1000000.0  # 0.001mm -> m
-                gripper_effort = gripper_msgs.grippers_effort  # 夹爪力矩 (0.1N·m单位)
-                gripper_status_code = gripper_msgs.status_code  # 夹爪状态码
+                gripper_pos_m = gripper_msgs.gripper_state.grippers_angle / 1000000.0  # 0.001mm -> m
+                gripper_effort = gripper_msgs.gripper_state.grippers_effort  # 夹爪力矩 (0.1N·m单位)
+                gripper_status_code = gripper_msgs.gripper_state.status_code  # 夹爪状态码
                 self._current_positions["gripper"] = gripper_pos_m
 
         except Exception as e:
