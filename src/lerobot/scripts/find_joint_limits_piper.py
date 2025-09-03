@@ -39,16 +39,11 @@ import numpy as np
 from lerobot.model.kinematics import RobotKinematics
 from lerobot.robots import (  # noqa: F401
     RobotConfig,
-    koch_follower,
     make_robot_from_config,
-    so100_follower,
 )
 from lerobot.teleoperators import (  # noqa: F401
     TeleoperatorConfig,
-    gamepad,
-    koch_leader,
     make_teleoperator_from_config,
-    so100_leader,
 )
 from lerobot.utils.robot_utils import busy_wait
 
@@ -77,8 +72,9 @@ def find_joint_and_ee_bounds(cfg: FindJointLimitsConfig):
 
     # Initialize min/max values
     observation = robot.get_observation()
-    left_joint_positions = np.array([observation['left_arm'][f"{key}.pos"] for key in robot.bus_left.motors])
-    right_joint_positions = np.array([observation['right_arm'][f"{key}.pos"] for key in robot.bus_right.motors])
+    left_joint_positions = np.array([observation[f"{motor}.pos"] for motor in robot.bus_left.motors if 'gripper' not in motor])
+    right_joint_positions = np.array([observation[f"{motor}.pos"] for motor in robot.bus_right.motors if 'gripper' not in motor])
+    # 末端执行器位置
     left_ee_pos = kinematics.forward_kinematics(left_joint_positions)[:3, 3]
     right_ee_pos = kinematics.forward_kinematics(right_joint_positions)[:3, 3]
 
