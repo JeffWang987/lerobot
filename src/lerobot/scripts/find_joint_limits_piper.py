@@ -70,55 +70,56 @@ def find_joint_and_ee_bounds(cfg: FindJointLimitsConfig):
 
     start_episode_t = time.perf_counter()
     robot_type = getattr(robot.config, "robot_type", "piper")
-    kinematics = RobotKinematics(cfg.robot.urdf_path, cfg.robot.target_frame_name)
+    # kinematics = RobotKinematics(cfg.robot.urdf_path, cfg.robot.target_frame_name)
 
     # Initialize min/max values
     observation = robot.get_observation()
     left_joint_positions = np.array([observation[f"{motor}.pos"] for motor in robot.bus_left.motors if 'gripper' not in motor])
     right_joint_positions = np.array([observation[f"{motor}.pos"] for motor in robot.bus_right.motors if 'gripper' not in motor])
     # 末端执行器位置
-    left_ee_pos = kinematics.forward_kinematics(left_joint_positions)[:3, 3]
-    right_ee_pos = kinematics.forward_kinematics(right_joint_positions)[:3, 3]
+    # left_ee_pos = kinematics.forward_kinematics(left_joint_positions)[:3, 3]
+    # right_ee_pos = kinematics.forward_kinematics(right_joint_positions)[:3, 3]
 
     max_pos_left = left_joint_positions.copy()
     min_pos_left = left_joint_positions.copy()
-    max_ee_left = left_ee_pos.copy()
-    min_ee_left = left_ee_pos.copy()
+    # max_ee_left = left_ee_pos.copy()
+    # min_ee_left = left_ee_pos.copy()
     max_pos_right = right_joint_positions.copy()
     min_pos_right = right_joint_positions.copy()
-    max_ee_right = right_ee_pos.copy()
-    min_ee_right = right_ee_pos.copy()
+    # max_ee_right = right_ee_pos.copy()
+    # min_ee_right = right_ee_pos.copy()
 
     while True:
         action = teleop.get_action()
         robot.send_action(action)
 
         observation = robot.get_observation()
-        left_joint_positions = np.array([observation[f"{key}.pos"] for key in robot.bus_left.motors])
-        right_joint_positions = np.array([observation[f"{key}.pos"] for key in robot.bus_right.motors])
-        left_ee_pos = kinematics.forward_kinematics(left_joint_positions)[:3, 3]
-        right_ee_pos = kinematics.forward_kinematics(right_joint_positions)[:3, 3]
+        left_joint_positions = np.array([observation[f"{motor}.pos"] for motor in robot.bus_left.motors if 'gripper' not in motor])
+        right_joint_positions = np.array([observation[f"{motor}.pos"] for motor in robot.bus_right.motors if 'gripper' not in motor])
+        # left_ee_pos = kinematics.forward_kinematics(left_joint_positions)[:3, 3]
+        # right_ee_pos = kinematics.forward_kinematics(right_joint_positions)[:3, 3]
 
         # Skip initial warmup period
         if (time.perf_counter() - start_episode_t) < 5:
             continue
 
         # Update min/max values
-        max_ee_left = np.maximum(max_ee_left, left_ee_pos)
-        max_ee_right = np.maximum(max_ee_right, right_ee_pos)
-        min_ee_left = np.minimum(min_ee_left, left_ee_pos)
-        min_ee_right = np.minimum(min_ee_right, right_ee_pos)
+        # max_ee_left = np.maximum(max_ee_left, left_ee_pos)
+        # max_ee_right = np.maximum(max_ee_right, right_ee_pos)
+        # min_ee_left = np.minimum(min_ee_left, left_ee_pos)
+        # min_ee_right = np.minimum(min_ee_right, right_ee_pos)
         max_pos_left = np.maximum(max_pos_left, left_joint_positions)
         max_pos_right = np.maximum(max_pos_right, right_joint_positions)
-        min_pos_right = np.minimum(max_pos_right, right_joint_positions)
+        min_pos_left = np.minimum(min_pos_left, left_joint_positions)
+        min_pos_right = np.minimum(min_pos_right, right_joint_positions)
 
         if time.perf_counter() - start_episode_t > cfg.teleop_time_s:
-            print(f"Max left ee position {np.round(max_ee_left, 4).tolist()}")
-            print(f"Min left ee position {np.round(min_ee_left, 4).tolist()}")
+            # print(f"Max left ee position {np.round(max_ee_left, 4).tolist()}")
+            # print(f"Min left ee position {np.round(min_ee_left, 4).tolist()}")
             print(f"Max left joint pos position {np.round(max_pos_left, 4).tolist()}")
             print(f"Min left joint pos position {np.round(min_pos_left, 4).tolist()}")
-            print(f"Max right ee position {np.round(max_ee_right, 4).tolist()}")
-            print(f"Min right ee position {np.round(min_ee_right, 4).tolist()}")
+            # print(f"Max right ee position {np.round(max_ee_right, 4).tolist()}")
+            # print(f"Min right ee position {np.round(min_ee_right, 4).tolist()}")
             print(f"Max right joint pos position {np.round(max_pos_right, 4).tolist()}")
             print(f"Min right joint pos position {np.round(min_pos_right, 4).tolist()}")
             break
@@ -128,3 +129,9 @@ def find_joint_and_ee_bounds(cfg: FindJointLimitsConfig):
 
 if __name__ == "__main__":
     find_joint_and_ee_bounds()
+    """
+    # cd to the lerobot directory and run:
+    python -m lerobot.scripts.find_joint_limits_piper \
+    --robot.type=piper_follower \
+    --teleop.type=piper_leader
+    """

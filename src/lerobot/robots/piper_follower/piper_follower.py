@@ -64,15 +64,15 @@ class PiperFollower(Robot):
 
         # 运动学模型 (如果有URDF)
         self.kinematics = None
-        if hasattr(config, 'urdf_path') and config.urdf_path and Path(config.urdf_path).exists():
-            try:
-                from lerobot.model.kinematics import RobotKinematics
-                self.kinematics = RobotKinematics(
-                    urdf_path=config.urdf_path,
-                    target_frame_name=getattr(config, 'target_frame_name', 'end_effector')  # TODO: check
-                )
-            except Exception as e:
-                logging.warning(f"Failed to load kinematics: {format_exc()}")
+        # if hasattr(config, 'urdf_path') and config.urdf_path and Path(config.urdf_path).exists():
+        #     try:
+        #         from lerobot.model.kinematics import RobotKinematics
+        #         self.kinematics = RobotKinematics(
+        #             urdf_path=config.urdf_path,
+        #             target_frame_name=getattr(config, 'target_frame_name', 'end_effector')  # TODO: check
+        #         )
+        #     except Exception as e:
+        #         logging.warning(f"Failed to load kinematics: {format_exc()}")
 
         logging.info("PiperFollower (dual-arm) initialized")
 
