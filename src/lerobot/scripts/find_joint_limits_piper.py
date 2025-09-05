@@ -124,7 +124,7 @@ def find_joint_and_ee_bounds(cfg: FindJointLimitsConfig):
             print(f"Min right joint pos position {np.round(min_pos_right, 4).tolist()}")
             break
 
-        busy_wait(0.01)
+busy_wait(0.001)
 
 
 if __name__ == "__main__":

@@ -96,7 +96,7 @@ class PiperMotorsBus:
                 dh_is_offset=0x01,  # 启用DH参数偏移
                 start_sdk_joint_limit=start_sdk_joint_limit,  # 启用软件关节限位
                 start_sdk_gripper_limit=start_sdk_gripper_limit,  # 启用软件夹爪限位
-                logger_level=logging.DEBUG,  # 日志配置
+                logger_level=logging.WARNING,  # 日志配置
                 log_to_file=False,
                 log_file_path=None
             )
@@ -221,7 +221,7 @@ class PiperMotorsBus:
                 gripper_pos_m = gripper_msgs.gripper_state.grippers_angle / 1000000.0  # 0.001mm -> m
                 gripper_effort = gripper_msgs.gripper_state.grippers_effort  # 夹爪力矩 (0.1N·m单位)
                 gripper_status_code = gripper_msgs.gripper_state.status_code  # 夹爪状态码
-                self._current_positions["gripper"] = gripper_pos_m
+                self._current_positions[self.motors[-1]] = gripper_pos_m
 
         except Exception as e:
             logging.error(f"Failed to update positions: {format_exc()}")
@@ -236,10 +236,17 @@ class PiperMotorsBus:
         Returns:
             电机名称到值的字典
             {
-                "joint_1": ...,
-                "joint_2": ...,
+                "left_joint_1": ..., # in rad
+                "left_joint_2": ...,
                 ...
-                "gripper": ...
+                "left_gripper": ... # in meters, optional
+            }
+            或者
+            {
+                "right_joint_1": ..., # in rad
+                "right_joint_2": ...,
+                ...
+                "right_gripper": ... # in meters, optional
             }
         """
         try:
@@ -265,10 +272,17 @@ class PiperMotorsBus:
             e.g.
             parameter="Goal_Position"
             values = {
-                "joint_1": 0.5, # in rad
-                "joint_2": 0.5,
+                "left_joint_1": ..., # in rad
+                "left_joint_2": ...,
                 ...
-                "gripper": 0.1 # in meters, optional
+                "left_gripper": ... # in meters, optional
+            }
+            或
+            values = {
+                "right_joint_1": ..., # in rad
+                "right_joint_2": ...,
+                ...
+                "right_gripper": ... # in meters, optional
             }
 
         """
@@ -306,10 +320,10 @@ class PiperMotorsBus:
                     )
 
                     # 处理夹爪
-                    if "gripper" in values:
-                        gripper_pos_m = np.clip(values["gripper"],
-                                              self.joint_limits["gripper"][0],
-                                              self.joint_limits["gripper"][1])
+                    if self.motors[-1] in values:
+                        gripper_pos_m = np.clip(values[self.motors[-1]],
+                                              self.joint_limits[self.motors[-1]][0],
+                                              self.joint_limits[self.motors[-1]][1])
                         # 米转换为0.001mm
                         gripper_angle_micro = int(gripper_pos_m * 1000000)
 
