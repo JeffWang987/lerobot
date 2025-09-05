@@ -96,7 +96,7 @@ class PiperMotorsBus:
                 dh_is_offset=0x01,  # 启用DH参数偏移
                 start_sdk_joint_limit=start_sdk_joint_limit,  # 启用软件关节限位
                 start_sdk_gripper_limit=start_sdk_gripper_limit,  # 启用软件夹爪限位
-                logger_level=logging.WARNING,  # 日志配置
+                logger_level=logging.DEBUG,  # 日志配置
                 log_to_file=False,
                 log_file_path=None
             )
