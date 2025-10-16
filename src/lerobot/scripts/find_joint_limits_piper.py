@@ -29,6 +29,8 @@ python -m lerobot.scripts.server.find_joint_limits \
     --teleop.port_right=can3 \
 ```
 """
+import logging
+logging.getLogger("can.interfaces.socketcan").setLevel(logging.ERROR)
 
 import time
 from dataclasses import dataclass
@@ -48,7 +50,7 @@ from lerobot.teleoperators import (  # noqa: F401
     make_teleoperator_from_config,
 )
 from lerobot.utils.robot_utils import busy_wait
-
+import pdb
 
 @dataclass
 class FindJointLimitsConfig:
@@ -70,6 +72,23 @@ def find_joint_and_ee_bounds(cfg: FindJointLimitsConfig):
 
     start_episode_t = time.perf_counter()
     robot_type = getattr(robot.config, "robot_type", "piper")
+    # ### === 修改开始：创建日志文件 ===
+    import os, csv
+    from datetime import datetime
+
+    log_dir = "logs"
+    os.makedirs(log_dir, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_path = os.path.join(log_dir, f"action_log_{timestamp}.csv")
+    # 写入表头：时间戳 + 所有动作键
+    # log_path="/home/agilex/lerobot_hil-serl/src/lerobot/scripts/test1.csv"
+    with open(log_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        header = ["time_s"] + list(teleop.action_features.keys())
+        writer.writerow(header)
+
+    print(f"[INFO] Action log initialized at: {log_path}")
+    ### === 修改结束 ===
     # kinematics = RobotKinematics(cfg.robot.urdf_path, cfg.robot.target_frame_name)
 
     # Initialize min/max values
@@ -102,7 +121,13 @@ def find_joint_and_ee_bounds(cfg: FindJointLimitsConfig):
         # Skip initial warmup period
         if (time.perf_counter() - start_episode_t) < 5:
             continue
-
+            ### === 修改开始：记录每帧 action ===
+        elapsed = time.perf_counter() - start_episode_t
+        with open(log_path, "a", newline="") as f:
+            writer = csv.writer(f)
+            row = [round(elapsed, 3)] + [round(action.get(k, 0.0), 6) for k in teleop.action_features.keys()]
+            writer.writerow(row)
+    ### === 修改结束 ===
         # Update min/max values
         # max_ee_left = np.maximum(max_ee_left, left_ee_pos)
         # max_ee_right = np.maximum(max_ee_right, right_ee_pos)
@@ -112,8 +137,9 @@ def find_joint_and_ee_bounds(cfg: FindJointLimitsConfig):
         max_pos_right = np.maximum(max_pos_right, right_joint_positions)
         min_pos_left = np.minimum(min_pos_left, left_joint_positions)
         min_pos_right = np.minimum(min_pos_right, right_joint_positions)
-
+        # pdb.set_trace()
         if time.perf_counter() - start_episode_t > cfg.teleop_time_s:
+            
             # print(f"Max left ee position {np.round(max_ee_left, 4).tolist()}")
             # print(f"Min left ee position {np.round(min_ee_left, 4).tolist()}")
             print(f"Max left joint pos position {np.round(max_pos_left, 4).tolist()}")
@@ -128,6 +154,7 @@ busy_wait(0.01)
 
 
 if __name__ == "__main__":
+    # pdb.set_trace()
     find_joint_and_ee_bounds()
     """
     # cd to the lerobot directory and run:

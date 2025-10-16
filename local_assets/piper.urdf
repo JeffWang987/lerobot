@@ -372,8 +372,11 @@
   <link name="camera_mount">
     <visual>
       <origin xyz="0 0 0.08" rpy="0 0 0"/>
-      <geometry>
+      <!-- <geometry>
         <mesh filename="meshes/camera_link.glb"/>
+      </geometry> -->
+      <geometry>
+        <mesh filename="meshes/camera.dae"/>
       </geometry>
     </visual>
   </link>
@@ -385,15 +388,42 @@
   <link name="camera">
     <visual>
       <origin xyz="0.014 -0.045 -0.03" rpy="0.1 0 -1.5707963267948966"/>
-      <geometry>
+      <!-- <geometry>
         <mesh filename="meshes/camera.glb"/>
+      </geometry> -->
+      <geometry>
+        <mesh filename="meshes/camera.dae"/>
       </geometry>
+      
     </visual>
   </link>
   <joint name="camera_joint" type="fixed">
     <parent link="camera_mount"/>
     <child link="camera"/>
     <origin xyz="0.045 0.09 0.115" rpy="0 -1.1116926535897932 -1.5707963267948966"/>
+  </joint>
+
+<link name="gripper">
+    <!-- 可视化一个小球，方便在 RViz 里看 -->
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><sphere radius="0.005"/></geometry>
+      <material name="tcp_red"><color rgba="1 0 0 1"/></material>
+    </visual>
+    <!-- 可选：避免影响碰撞，给个极小的碰撞体或干脆不写 -->
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><sphere radius="0.0001"/></geometry>
+    </collision>
+  </link>
+
+  <!-- 固定关节：把 TCP 从 link6 平移/旋转到真实夹爪中心 -->
+  <joint name="link6_to_tcp" type="fixed">
+    <parent link="link6"/>
+    <child  link="gripper"/>
+    <!-- TODO: 这里的 xyz 要改成“link6 原点到夹爪中心”的偏移量 -->
+    <!-- 先试沿某一轴正负方向微调，RViz 看位置是否对 -->
+    <origin xyz="0 0 0.15" rpy="0 0 0"/>
   </joint>
 
   <link

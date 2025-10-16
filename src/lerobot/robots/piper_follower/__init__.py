@@ -16,3 +16,5 @@
 
 from .config_piper_follower import PiperFollowerConfig
 from .piper_follower import PiperFollower
+from .config_piper_follower_end_effector import PiperFollowerEndEffectorConfig
+from .piper_follower_end_effector import PiperFollowerEndEffector

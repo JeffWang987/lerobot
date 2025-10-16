@@ -65,6 +65,10 @@ def make_robot_from_config(config: RobotConfig) -> Robot:
         from .piper_follower import PiperFollower
 
         return PiperFollower(config)
+    elif config.type == "piper_follower_end_effector":
+        from .piper_follower import PiperFollowerEndEffector
+
+        return PiperFollowerEndEffector(config) 
     elif config.type == "mock_robot":
         from tests.mocks.mock_robot import MockRobot
 

@@ -36,8 +36,8 @@ class PiperFollowerConfig(RobotConfig):
     urdf_path: str = "local_assets/piper.urdf" # 机器人运动学模型
     target_frame_name: str = "gripper"  # urdf中末端执行器frame name TODO: check
     # 安全配置
-    reset_pos_on_disconnect: bool = True  # 断开连接时是否复位
-    disable_torque_on_disconnect: bool = True  # 断开连接时是否失能
+    reset_pos_on_disconnect: bool = False  # 断开连接时是否复位
+    disable_torque_on_disconnect: bool = False  # 断开连接时是否失能
     max_relative_target: dict[str, float] | None = None  # 最大相对位移限制
     # 见src/lerobot/robots/utils.py line 76
     """

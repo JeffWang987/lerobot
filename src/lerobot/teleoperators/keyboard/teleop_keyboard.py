@@ -1,19 +1,6 @@
 #!/usr/bin/env python
 
-# Copyright 2024 The HuggingFace Inc. team. All rights reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
+# Copyright 2024 The HuggingFace Inc. team. All rights...
 import logging
 import os
 import sys
@@ -103,10 +90,14 @@ class KeyboardTeleop(Teleoperator):
     def _on_press(self, key):
         if hasattr(key, "char"):
             self.event_queue.put((key.char, True))
+        else:
+            self.event_queue.put((key, True))
 
     def _on_release(self, key):
         if hasattr(key, "char"):
             self.event_queue.put((key.char, False))
+        else:
+            self.event_queue.put((key, False))
         if key == keyboard.Key.esc:
             logging.info("ESC pressed, disconnecting.")
             self.disconnect()
@@ -150,7 +141,7 @@ class KeyboardTeleop(Teleoperator):
 class KeyboardEndEffectorTeleop(KeyboardTeleop):
     """
     Teleop class to use keyboard inputs for end effector control.
-    Designed to be used with the `So100FollowerEndEffector` robot.
+    Designed to be used with PiperFollowerEndEffector robot.
     """
 
     config_class = KeyboardEndEffectorTeleopConfig
@@ -161,20 +152,18 @@ class KeyboardEndEffectorTeleop(KeyboardTeleop):
         self.config = config
         self.misc_keys_queue = Queue()
 
+    # === 修改开始：action_features 输出 Piper EE 期望的 8 个字段 ===
     @property
     def action_features(self) -> dict:
-        if self.config.use_gripper:
-            return {
-                "dtype": "float32",
-                "shape": (4,),
-                "names": {"delta_x": 0, "delta_y": 1, "delta_z": 2, "gripper": 3},
-            }
-        else:
-            return {
-                "dtype": "float32",
-                "shape": (3,),
-                "names": {"delta_x": 0, "delta_y": 1, "delta_z": 2},
-            }
+        return {
+            "dtype": "float32",
+            "shape": (8,),
+            "names": {
+                "left_delta_x": 0, "left_delta_y": 1, "left_delta_z": 2, "left_gripper": 3,
+                "right_delta_x": 4, "right_delta_y": 5, "right_delta_z": 6, "right_gripper": 7,
+            },
+        }
+    # === 修改结束 ===
 
     def _on_press(self, key):
         if hasattr(key, "char"):
@@ -185,7 +174,11 @@ class KeyboardEndEffectorTeleop(KeyboardTeleop):
         if hasattr(key, "char"):
             key = key.char
         self.event_queue.put((key, False))
+        if key == keyboard.Key.esc:
+            logging.info("ESC pressed, disconnecting.")
+            self.disconnect()
 
+    # === 修改开始：将按键映射到左右臂的 EE 增量与夹爪命令 ===
     def get_action(self) -> dict[str, Any]:
         if not self.is_connected:
             raise DeviceNotConnectedError(
@@ -193,45 +186,62 @@ class KeyboardEndEffectorTeleop(KeyboardTeleop):
             )
 
         self._drain_pressed_keys()
-        delta_x = 0.0
-        delta_y = 0.0
-        delta_z = 0.0
-        gripper_action = 1.0
 
-        # Generate action based on current key states
-        for key, val in self.current_pressed.items():
-            if key == keyboard.Key.up:
-                delta_y = -int(val)
-            elif key == keyboard.Key.down:
-                delta_y = int(val)
-            elif key == keyboard.Key.left:
-                delta_x = int(val)
+        # 默认：不动（Δ=0），夹爪保持（=1.0）
+        l_dx = l_dy = l_dz = 0.0
+        r_dx = r_dy = r_dz = 0.0
+        l_gr = 1.0
+        r_gr = 1.0
+
+        for key, pressed in self.current_pressed.items():
+            if not pressed:
+                continue
+
+            # 左臂 — 方向键 & Shift/Ctrl
+            if key == keyboard.Key.left:
+                l_dx = +1.0
             elif key == keyboard.Key.right:
-                delta_x = -int(val)
-            elif key == keyboard.Key.shift:
-                delta_z = -int(val)
-            elif key == keyboard.Key.shift_r:
-                delta_z = int(val)
-            elif key == keyboard.Key.ctrl_r:
-                # Gripper actions are expected to be between 0 (close), 1 (stay), 2 (open)
-                gripper_action = int(val) + 1
-            elif key == keyboard.Key.ctrl_l:
-                gripper_action = int(val) - 1
-            elif val:
-                # If the key is pressed, add it to the misc_keys_queue
-                # this will record key presses that are not part of the delta_x, delta_y, delta_z
-                # this is useful for retrieving other events like interventions for RL, episode success, etc.
+                l_dx = -1.0
+            elif key == keyboard.Key.up:
+                l_dy = -1.0
+            elif key == keyboard.Key.down:
+                l_dy = +1.0
+            elif key == keyboard.Key.shift:      # 向下
+                l_dz = -1.0
+            elif key == keyboard.Key.shift_r:    # 向上
+                l_dz = +1.0
+            elif key == keyboard.Key.ctrl_l:     # 夹爪收拢
+                l_gr = 0.0
+            elif key == keyboard.Key.ctrl_r:     # 夹爪张开
+                l_gr = 2.0
+
+            # 右臂 — WASD / ZX / N,M
+            elif key in ("a", "A"):
+                r_dx = +1.0
+            elif key in ("d", "D"):
+                r_dx = -1.0
+            elif key in ("w", "W"):
+                r_dy = -1.0
+            elif key in ("s", "S"):
+                r_dy = +1.0
+            elif key in ("z", "Z"):
+                r_dz = -1.0
+            elif key in ("x", "X"):
+                r_dz = +1.0
+            elif key in ("n", "N"):              # 夹爪收拢
+                r_gr = 0.0
+            elif key in ("m", "M"):              # 夹爪张开
+                r_gr = 2.0
+            else:
+                # 记录其它键（可用于打标签/事件）
                 self.misc_keys_queue.put(key)
 
+        # 清空已处理的键表，避免“粘连”
         self.current_pressed.clear()
 
-        action_dict = {
-            "delta_x": delta_x,
-            "delta_y": delta_y,
-            "delta_z": delta_z,
+        # 输出 Piper EE 期望的动作字典
+        return {
+            "left_delta_x": l_dx, "left_delta_y": l_dy, "left_delta_z": l_dz, "left_gripper": l_gr,
+            "right_delta_x": r_dx, "right_delta_y": r_dy, "right_delta_z": r_dz, "right_gripper": r_gr,
         }
-
-        if self.config.use_gripper:
-            action_dict["gripper"] = gripper_action
-
-        return action_dict
+    # === 修改结束 ===
