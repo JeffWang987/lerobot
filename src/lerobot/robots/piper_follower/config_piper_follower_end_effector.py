@@ -18,7 +18,8 @@ class PiperFollowerEndEffectorConfig(PiperFollowerConfig):
     # URDF 与目标末端 frame（与 PiperFollowerConfig 中保持一致或覆盖）
     # 若左右臂末端 frame 名字相同，可共用一个；也可以写成 left/right 两个字段
     urdf_path: str | None = "local_assets/piper.urdf"
-    target_frame_name: str = "gripper"   # 你的 URDF 中末端执行器 link 名称
+    # target_frame_name: str = "gripper"   # 你的 URDF 中末端执行器 link 名称
+    target_frame_name: str = "link6"   # 你的 URDF 中末端执行器 link 名称
 
     # 末端工作空间边界（单位: 米）——左右臂可分开配置
     end_effector_bounds_left: dict[str, list[float]] = field(
@@ -30,7 +31,7 @@ class PiperFollowerEndEffectorConfig(PiperFollowerConfig):
 
     # 每次键盘/teleop 的步长（单位: 米）
     end_effector_step_sizes: dict[str, float] = field(
-        default_factory=lambda: {"x": 0.01, "y": 0.01, "z": 0.01}
+        default_factory=lambda: {"x": 0.0001, "y": 0.0001, "z": 0.0001}
     )
 
     # 夹爪最大开合（单位: 米，Piper 小夹爪约 0.07m）

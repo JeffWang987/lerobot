@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-# Copyright 2024 The HuggingFace Inc. team. All rights...
+# Copyright 2024 ...
 import logging
 import os
 import sys
@@ -18,7 +18,6 @@ try:
     if ("DISPLAY" not in os.environ) and ("linux" in sys.platform):
         logging.info("No DISPLAY set. Skipping pynput import.")
         raise ImportError("pynput blocked intentionally due to no display.")
-
     from pynput import keyboard
 except ImportError:
     keyboard = None
@@ -141,7 +140,7 @@ class KeyboardTeleop(Teleoperator):
 class KeyboardEndEffectorTeleop(KeyboardTeleop):
     """
     Teleop class to use keyboard inputs for end effector control.
-    Designed to be used with PiperFollowerEndEffector robot.
+    Designed to be used with PiperFollowerEndEffector robot (6-DoF per arm).
     """
 
     config_class = KeyboardEndEffectorTeleopConfig
@@ -152,18 +151,23 @@ class KeyboardEndEffectorTeleop(KeyboardTeleop):
         self.config = config
         self.misc_keys_queue = Queue()
 
-    # === 修改开始：action_features 输出 Piper EE 期望的 8 个字段 ===
+    # === 升级：输出 Piper EE 期望的 14 个字段（双臂 6-DoF + 夹爪） ===
     @property
     def action_features(self) -> dict:
         return {
             "dtype": "float32",
-            "shape": (8,),
+            "shape": (14,),
             "names": {
-                "left_delta_x": 0, "left_delta_y": 1, "left_delta_z": 2, "left_gripper": 3,
-                "right_delta_x": 4, "right_delta_y": 5, "right_delta_z": 6, "right_gripper": 7,
+                # 左臂
+                "left_delta_x": 0, "left_delta_y": 1, "left_delta_z": 2,
+                "left_delta_rx": 3, "left_delta_ry": 4, "left_delta_rz": 5,
+                "left_gripper": 6,
+                # 右臂
+                "right_delta_x": 7, "right_delta_y": 8, "right_delta_z": 9,
+                "right_delta_rx": 10, "right_delta_ry": 11, "right_delta_rz": 12,
+                "right_gripper": 13,
             },
         }
-    # === 修改结束 ===
 
     def _on_press(self, key):
         if hasattr(key, "char"):
@@ -178,7 +182,20 @@ class KeyboardEndEffectorTeleop(KeyboardTeleop):
             logging.info("ESC pressed, disconnecting.")
             self.disconnect()
 
-    # === 修改开始：将按键映射到左右臂的 EE 增量与夹爪命令 ===
+    def _is_pressed(self, k: Any) -> bool:
+        return self.current_pressed.get(k, False) is True
+
+    # === 键位说明 ===
+    # 左臂（平移）：←/→: ±x，↑/↓: ∓y，Left-Shift: z-，Right-Shift: z+
+    # 左臂（姿态）：R/Y: ±roll，T/G: ±pitch，F/H: ±yaw
+    # 左臂（夹爪）：Ctrl-L 收拢，Ctrl-R 张开；默认 1.0 保持
+    #
+    # 右臂（平移）：A/D: ±x，W/S: ∓y，Z/X: ∓/+ z
+    # 右臂（姿态）：U/O: ±roll，I/K: ±pitch，J/L: ±yaw
+    # 右臂（夹爪）：N 收拢，M 张开；默认 1.0 保持
+    #
+    # 说明：实际步长由机器人端 config 的 end_effector_step_sizes / end_effector_rot_step_sizes 决定。
+
     def get_action(self) -> dict[str, Any]:
         if not self.is_connected:
             raise DeviceNotConnectedError(
@@ -189,59 +206,126 @@ class KeyboardEndEffectorTeleop(KeyboardTeleop):
 
         # 默认：不动（Δ=0），夹爪保持（=1.0）
         l_dx = l_dy = l_dz = 0.0
-        r_dx = r_dy = r_dz = 0.0
+        l_rx = l_ry = l_rz = 0.0
         l_gr = 1.0
+
+        r_dx = r_dy = r_dz = 0.0
+        r_rx = r_ry = r_rz = 0.0
         r_gr = 1.0
 
-        for key, pressed in self.current_pressed.items():
-            if not pressed:
-                continue
+        # ---- 左臂 平移（箭头 + Shift 键）----
+        if self._is_pressed(keyboard.Key.left):
+            l_dx = +1.0
+        if self._is_pressed(keyboard.Key.right):
+            l_dx = -1.0
+        if self._is_pressed(keyboard.Key.up):
+            l_dy = -1.0
+        if self._is_pressed(keyboard.Key.down):
+            l_dy = +1.0
+        if self._is_pressed(keyboard.Key.shift):
+            l_dz = -1.0
+        if self._is_pressed(keyboard.Key.shift_r):
+            l_dz = +1.0
 
-            # 左臂 — 方向键 & Shift/Ctrl
-            if key == keyboard.Key.left:
-                l_dx = +1.0
-            elif key == keyboard.Key.right:
-                l_dx = -1.0
-            elif key == keyboard.Key.up:
-                l_dy = -1.0
-            elif key == keyboard.Key.down:
-                l_dy = +1.0
-            elif key == keyboard.Key.shift:      # 向下
-                l_dz = -1.0
-            elif key == keyboard.Key.shift_r:    # 向上
-                l_dz = +1.0
-            elif key == keyboard.Key.ctrl_l:     # 夹爪收拢
-                l_gr = 0.0
-            elif key == keyboard.Key.ctrl_r:     # 夹爪张开
-                l_gr = 2.0
+        # ---- 左臂 姿态（R/Y: roll，T/G: pitch，F/H: yaw）----
+        for k in ("r", "R"):
+            if self._is_pressed(k):
+                l_rx = -1.0
+        for k in ("y", "Y"):
+            if self._is_pressed(k):
+                l_rx = +1.0
+        for k in ("t", "T"):
+            if self._is_pressed(k):
+                l_ry = +1.0
+        for k in ("g", "G"):
+            if self._is_pressed(k):
+                l_ry = -1.0
+        for k in ("f", "F"):
+            if self._is_pressed(k):
+                l_rz = -1.0
+        for k in ("h", "H"):
+            if self._is_pressed(k):
+                l_rz = +1.0
 
-            # 右臂 — WASD / ZX / N,M
-            elif key in ("a", "A"):
+        # ---- 左臂 夹爪 ----
+        if self._is_pressed(keyboard.Key.ctrl_l):
+            l_gr = 0.0  # 收拢
+        if self._is_pressed(keyboard.Key.ctrl_r):
+            l_gr = 2.0  # 张开
+
+        # ---- 右臂 平移（WASD + ZX）----
+        for k in ("a", "A"):
+            if self._is_pressed(k):
                 r_dx = +1.0
-            elif key in ("d", "D"):
+        for k in ("d", "D"):
+            if self._is_pressed(k):
                 r_dx = -1.0
-            elif key in ("w", "W"):
+        for k in ("w", "W"):
+            if self._is_pressed(k):
                 r_dy = -1.0
-            elif key in ("s", "S"):
+        for k in ("s", "S"):
+            if self._is_pressed(k):
                 r_dy = +1.0
-            elif key in ("z", "Z"):
+        for k in ("z", "Z"):
+            if self._is_pressed(k):
                 r_dz = -1.0
-            elif key in ("x", "X"):
+        for k in ("x", "X"):
+            if self._is_pressed(k):
                 r_dz = +1.0
-            elif key in ("n", "N"):              # 夹爪收拢
-                r_gr = 0.0
-            elif key in ("m", "M"):              # 夹爪张开
-                r_gr = 2.0
-            else:
-                # 记录其它键（可用于打标签/事件）
-                self.misc_keys_queue.put(key)
 
-        # 清空已处理的键表，避免“粘连”
+        # ---- 右臂 姿态（U/O: roll，I/K: pitch，J/L: yaw）----
+        for k in ("u", "U"):
+            if self._is_pressed(k):
+                r_rx = -1.0
+        for k in ("o", "O"):
+            if self._is_pressed(k):
+                r_rx = +1.0
+        for k in ("i", "I"):
+            if self._is_pressed(k):
+                r_ry = +1.0
+        for k in ("k", "K"):
+            if self._is_pressed(k):
+                r_ry = -1.0
+        for k in ("j", "J"):
+            if self._is_pressed(k):
+                r_rz = -1.0
+        for k in ("l", "L"):
+            if self._is_pressed(k):
+                r_rz = +1.0
+
+        # ---- 右臂 夹爪 ----
+        for k in ("n", "N"):
+            if self._is_pressed(k):
+                r_gr = 0.0
+        for k in ("m", "M"):
+            if self._is_pressed(k):
+                r_gr = 2.0
+
+        # 记录其它键（可用于打标签/事件）
+        for key, pressed in list(self.current_pressed.items()):
+            if pressed:
+                known = {
+                    keyboard.Key.left, keyboard.Key.right, keyboard.Key.up, keyboard.Key.down,
+                    keyboard.Key.shift, keyboard.Key.shift_r, keyboard.Key.ctrl_l, keyboard.Key.ctrl_r,
+                    "r","R","y","Y","t","T","g","G","f","F","h","H",
+                    "a","A","d","D","w","W","s","S","z","Z","x","X",
+                    "u","U","o","O","i","I","k","K","j","J","l","L",
+                    "n","N","m","M"
+                }
+                if key not in known:
+                    self.misc_keys_queue.put(key)
+
+        # 清空已处理的键表（避免持续粘连；需要长按时，pynput 会继续上报）
         self.current_pressed.clear()
 
-        # 输出 Piper EE 期望的动作字典
+        # 输出 Piper EE 期望的动作字典（与机器人端 14 维一一对应）
         return {
-            "left_delta_x": l_dx, "left_delta_y": l_dy, "left_delta_z": l_dz, "left_gripper": l_gr,
-            "right_delta_x": r_dx, "right_delta_y": r_dy, "right_delta_z": r_dz, "right_gripper": r_gr,
+            # 左臂：平移 + 姿态 + 夹爪
+            "left_delta_x": l_dx, "left_delta_y": l_dy, "left_delta_z": l_dz,
+            "left_delta_rx": l_rx, "left_delta_ry": l_ry, "left_delta_rz": l_rz,
+            "left_gripper": l_gr,
+            # 右臂：平移 + 姿态 + 夹爪
+            "right_delta_x": r_dx, "right_delta_y": r_dy, "right_delta_z": r_dz,
+            "right_delta_rx": r_rx, "right_delta_ry": r_ry, "right_delta_rz": r_rz,
+            "right_gripper": r_gr,
         }
-    # === 修改结束 ===

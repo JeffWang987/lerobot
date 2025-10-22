@@ -2,9 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import logging
-import time
 from typing import Any
-
 import numpy as np
 
 from lerobot.cameras.utils import make_cameras_from_configs
@@ -17,14 +15,23 @@ from .config_piper_follower_end_effector import PiperFollowerEndEffectorConfig
 logger = logging.getLogger(__name__)
 
 
+def _skew(v: np.ndarray) -> np.ndarray:
+    x, y, z = float(v[0]), float(v[1]), float(v[2])
+    return np.array([[0.0, -z, y],
+                     [z, 0.0, -x],
+                     [-y, x, 0.0]], dtype=np.float64)
+
+
+def _exp_so3(w: np.ndarray) -> np.ndarray:
+    theta = float(np.linalg.norm(w))
+    if theta < 1e-9:
+        return np.eye(3, dtype=np.float64) + _skew(w)
+    K = _skew(w / theta)
+    return np.eye(3, dtype=np.float64) + np.sin(theta) * K + (1.0 - np.cos(theta)) * (K @ K)
+
+
 class PiperFollowerEndEffector(PiperFollower):
-    """
-    Piper 双臂末端空间控制。
-    把 EE 空间动作 (Δx,Δy,Δz,gripper) → 关节空间，再交给父类 send_action 下发。
-    - URDF: 6 个旋转关节 + 2 个平动手指 (joint7/joint8)
-    - 硬件: 6 个旋转关节 + 1 个 gripper 宽度(米)
-    - 映射: joint7 = joint8 = width/2（并裁剪到[0, 0.04]m）
-    """
+    """Piper 双臂末端 6-DoF 控制：仅平移时 IK 只约束位置；显式转动时才启用姿态权重。"""
 
     config_class = PiperFollowerEndEffectorConfig
     name = "piper_follower_end_effector"
@@ -33,234 +40,188 @@ class PiperFollowerEndEffector(PiperFollower):
         super().__init__(config, **kwargs)
         self.config = config
 
-        # 末端运动学（左右臂各一份）
         if self.config.urdf_path is None:
-            raise ValueError(
-                "必须提供 urdf_path 才能进行末端控制。请在 PiperFollowerEndEffectorConfig 中设置 urdf_path。"
-            )
-        self.kinematics_left = RobotKinematics(
-            urdf_path=self.config.urdf_path,
-            target_frame_name=self.config.target_frame_name,
-        )
-        self.kinematics_right = RobotKinematics(
-            urdf_path=self.config.urdf_path,
-            target_frame_name=self.config.target_frame_name,
-        )
+            raise ValueError("必须提供 urdf_path 才能进行末端控制。")
 
-        # —— 关键：显式指定模型关节顺序（与你的 URDF 对应）——
-        # joint7/joint8 为两指的平动关节
-        self.model_joint_order = ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6", "joint7", "joint8"]
-        # 让 FK/IK 都按这套顺序 set/get（如果 RobotKinematics 支持）
-        try:
-            self.kinematics_left.joint_names = self.model_joint_order
-            self.kinematics_right.joint_names = self.model_joint_order
-        except Exception:
-            pass
+        # 可被 config 覆盖的默认参数
+        if not hasattr(self.config, "end_effector_rot_step_sizes"):
+            self.config.end_effector_rot_step_sizes = {"rx": 0.003, "ry": 0.003, "rz": 0.003}
+        if not hasattr(self.config, "ik_orientation_weight"):
+            self.config.ik_orientation_weight = 1.0
+        if not hasattr(self.config, "ik_position_weight"):
+            self.config.ik_position_weight = 1.0
+        if not hasattr(self.config, "orientation_activation_eps"):
+            self.config.orientation_activation_eps = 1e-9
 
-        # 状态缓存（硬件 6 关节 + gripper 宽度；以及模型的 8 维 q 的 EE 齐次变换）
-        self.current_q_left = None         # 左臂 6x1（rad）
-        self.current_q_right = None        # 右臂 6x1（rad）
-        self.current_width_left = None     # 左夹爪宽度（m）
-        self.current_width_right = None    # 右夹爪宽度（m）
-        self.current_ee_T_left = None      # 左 EE 4x4
-        self.current_ee_T_right = None     # 右 EE 4x4
+        kinL = RobotKinematics(urdf_path=self.config.urdf_path, target_frame_name=self.config.target_frame_name)
+        kinR = RobotKinematics(urdf_path=self.config.urdf_path, target_frame_name=self.config.target_frame_name)
 
-        # 相机（与父类一致）
+        model_joint_order = ["joint1","joint2","joint3","joint4","joint5","joint6","joint7","joint8"]
+        for kin in (kinL, kinR):
+            if hasattr(kin, "joint_names"):
+                try:
+                    kin.joint_names = model_joint_order
+                except Exception:
+                    pass
+
         self.cameras = make_cameras_from_configs(config.cameras)
 
-        # 硬件侧“臂关节”键名（不含 gripper）
-        self.arm_joint_keys_left = [f"left_joint_{i}" for i in range(1, 7)]
-        self.arm_joint_keys_right = [f"right_joint_{i}" for i in range(1, 7)]
-        self.left_gripper_key = "left_gripper"
-        self.right_gripper_key = "right_gripper"
+        self.sides = {
+            "left": {
+                "bus": self.bus_left, "kin": kinL,
+                "arm_keys": [f"left_joint_{i}" for i in range(1, 7)],
+                "grip_key": "left_gripper",
+                "q6": None, "width": None, "T": None,
+            },
+            "right": {
+                "bus": self.bus_right, "kin": kinR,
+                "arm_keys": [f"right_joint_{i}" for i in range(1, 7)],
+                "grip_key": "right_gripper",
+                "q6": None, "width": None, "T": None,
+            },
+        }
 
-        # URDF 中两指的最大行程（各自）
-        self._urdf_finger_max = 0.04  # joint7/joint8 上限（米），来自你的 URDF
+        self._urdf_finger_max = 0.04
 
-    # === 动作特征：左(Δx,Δy,Δz,gripper) + 右(Δx,Δy,Δz,gripper) ===
     @property
     def action_features(self) -> dict[str, Any]:
         return {
             "dtype": "float32",
-            "shape": (8,),
+            "shape": (14,),
             "names": {
-                "left_delta_x": 0, "left_delta_y": 1, "left_delta_z": 2, "left_gripper": 3,
-                "right_delta_x": 4, "right_delta_y": 5, "right_delta_z": 6, "right_gripper": 7,
+                "left_delta_x": 0, "left_delta_y": 1, "left_delta_z": 2,
+                "left_delta_rx": 3, "left_delta_ry": 4, "left_delta_rz": 5,
+                "left_gripper": 6,
+                "right_delta_x": 7, "right_delta_y": 8, "right_delta_z": 9,
+                "right_delta_rx": 10, "right_delta_ry": 11, "right_delta_rz": 12,
+                "right_gripper": 13,
             },
         }
 
-    # ===== 工具：硬件读数 → 模型 8 维 q（joint1..joint8）=====
-    def _hw_to_model_q(self, side: str, present_pos: dict) -> np.ndarray:
-        if side == "left":
-            arm_keys = self.arm_joint_keys_left
-            g_key = self.left_gripper_key
+    # ---------- 工具函数 ----------
+
+    def _present_to_q8(self, side: str, present: dict) -> tuple[np.ndarray, float, np.ndarray]:
+        arm_keys = self.sides[side]["arm_keys"]
+        grip_key = self.sides[side]["grip_key"]
+        q6 = np.array([float(present[k]) for k in arm_keys], dtype=np.float64)
+        width = float(present.get(grip_key, 0.0))
+        d = float(np.clip(width * 0.5, 0.0, self._urdf_finger_max))
+        q8 = np.concatenate([q6, np.array([d, d], dtype=np.float64)], axis=0)
+        return q6, width, q8
+
+    def _clip_xyz(self, side: str, p: np.ndarray) -> np.ndarray:
+        b = self.config.end_effector_bounds_left if side == "left" else self.config.end_effector_bounds_right
+        if b:
+            p = np.clip(p, b["min"], b["max"])
+        return p
+
+    def _grip_next_width(self, cur_w: float, cmd: float) -> float:
+        return float(np.clip(cur_w + (float(cmd) - 1.0) * self.config.max_gripper_pos,
+                             0.0, self.config.max_gripper_pos))
+
+    def _apply_se3_increment(self, side: str, T_cur: np.ndarray,
+                             d_xyz_base: np.ndarray, d_rpy_base: np.ndarray,
+                             active_rot: bool) -> np.ndarray:
+        """
+        基坐标下应用 SE(3) 增量。
+        - 平移：总是应用（并做边界裁剪）
+        - 旋转：仅当 active_rot=True（显式转动）时：R_tar = R_cur @ exp(Δr)
+               否则保持 R_tar = R_cur（只约束位置）
+        """
+        T_tar = np.eye(4, dtype=np.float64)
+        # 平移
+        p_tar = self._clip_xyz(side, T_cur[:3, 3] + d_xyz_base)
+        # 姿态
+        if active_rot:
+            R_inc = _exp_so3(d_rpy_base.astype(np.float64))
+            R_tar = T_cur[:3, :3] @ R_inc
         else:
-            arm_keys = self.arm_joint_keys_right
-            g_key = self.right_gripper_key
+            R_tar = T_cur[:3, :3].copy()
 
-        q = []
-        # 1..6 旋转关节
-        for k in arm_keys:
-            q.append(float(present_pos[k]))  # Python float→C++ double
+        T_tar[:3, :3] = R_tar
+        T_tar[:3, 3] = p_tar
+        return T_tar
 
-        # gripper 宽度（m）→ 两指各自位移
-        width = float(present_pos.get(g_key, 0.0))
-        d = np.clip(width * 0.5, 0.0, self._urdf_finger_max)
-        q.append(float(d))  # joint7
-        q.append(float(d))  # joint8
-
-        return np.asarray(q, dtype=np.float64)  # FK/IK 用 float64
-
-    # ===== 从缓存的硬件 6 关节 + width 组合出模型 8 维 q（供 IK 初值或 FK 使用）=====
-    def _compose_model_q_from_cache(self, side: str) -> np.ndarray:
-        if side == "left":
-            assert self.current_q_left is not None and self.current_width_left is not None
-            width = self.current_width_left
-            q6 = self.current_q_left
-        else:
-            assert self.current_q_right is not None and self.current_width_right is not None
-            width = self.current_width_right
-            q6 = self.current_q_right
-
-        d = np.clip(float(width) * 0.5, 0.0, self._urdf_finger_max)
-        q = np.concatenate([np.asarray(q6, dtype=np.float64), np.array([d, d], dtype=np.float64)], axis=0)
-        return q
-
-    # === 读取一次当前 q/EE（内部工具） ===
-    def _read_current_q_ee_once(self):
-        # 左臂 present
-        left_present = self.bus_left.sync_read("Present_Position")
-        self.current_q_left = np.array([left_present[n] for n in self.arm_joint_keys_left], dtype=np.float64)
-        self.current_width_left = float(left_present.get(self.left_gripper_key, 0.0))
-        q_left_model = self._hw_to_model_q("left", left_present)
-        self.current_ee_T_left = self.kinematics_left.forward_kinematics(q_left_model)
-
-        # 右臂 present
-        right_present = self.bus_right.sync_read("Present_Position")
-        self.current_q_right = np.array([right_present[n] for n in self.arm_joint_keys_right], dtype=np.float64)
-        self.current_width_right = float(right_present.get(self.right_gripper_key, 0.0))
-        q_right_model = self._hw_to_model_q("right", right_present)
-        self.current_ee_T_right = self.kinematics_right.forward_kinematics(q_right_model)
+    # ---------- 主流程 ----------
 
     def send_action(self, action: dict[str, Any] | np.ndarray) -> dict[str, Any]:
-        """
-        输入（dict 或 ndarray）:
-        - dict: 包含 left/right_delta_x/y/z，left/right_gripper（可缺省，默认 1.0）
-        - ndarray shape=(8,): [lx,ly,lz,lg, rx,ry,rz,rg]
-        其中 Δx/Δy/Δz 会乘以 config.end_effector_step_sizes 的步长（米）。
-        gripper∈[0,2]，会映射到 [-max,+max] 的增量（米），与当前宽度叠加，并裁剪到 [0, max_gripper_pos]（米）。
-        """
         if not self.is_connected:
             raise DeviceNotConnectedError(f"{self} is not connected.")
 
-        # ---- 解析动作为 ndarray ----
+        fields = (
+            "left_delta_x","left_delta_y","left_delta_z",
+            "left_delta_rx","left_delta_ry","left_delta_rz","left_gripper",
+            "right_delta_x","right_delta_y","right_delta_z",
+            "right_delta_rx","right_delta_ry","right_delta_rz","right_gripper",
+        )
+        a14 = np.zeros(14, dtype=np.float64)
         if isinstance(action, dict):
-            lgr = float(action.get("left_gripper", 1.0))
-            rgr = float(action.get("right_gripper", 1.0))
-            arr = np.array([
-                float(action.get("left_delta_x", 0.0)),
-                float(action.get("left_delta_y", 0.0)),
-                float(action.get("left_delta_z", 0.0)),
-                lgr,
-                float(action.get("right_delta_x", 0.0)),
-                float(action.get("right_delta_y", 0.0)),
-                float(action.get("right_delta_z", 0.0)),
-                rgr,
-            ], dtype=np.float32)
-            action = arr
+            missing = [k for k in fields if k not in action]
+            if missing:
+                raise ValueError(f"缺少必要动作字段: {missing}")
+            for i, k in enumerate(fields):
+                a14[i] = float(action[k])
         else:
-            action = np.asarray(action, dtype=np.float32)
-            if action.shape != (8,):
-                logger.warning(f"Expected action shape (8,), got {action.shape}. Zeroing.")
-                action = np.zeros(8, dtype=np.float32)
+            arr = np.asarray(action, dtype=np.float64).ravel()
+            if arr.shape != (14,):
+                raise ValueError(f"动作应为形状 (14,) 的数组，收到 {arr.shape}")
+            a14[:] = arr
 
-        # === 修改开始：每一步都从硬件重读 present，并用 FK 同步当前 EE（闭环增量） ===
-        left_present = self.bus_left.sync_read("Present_Position")
-        right_present = self.bus_right.sync_read("Present_Position")
+        sx, sy, sz = (float(self.config.end_effector_step_sizes[k]) for k in ("x","y","z"))
+        srx, sry, srz = (float(self.config.end_effector_rot_step_sizes[k]) for k in ("rx","ry","rz"))
 
-        self.current_q_left = np.array([left_present[n] for n in self.arm_joint_keys_left], dtype=np.float64)
-        self.current_q_right = np.array([right_present[n] for n in self.arm_joint_keys_right], dtype=np.float64)
-        self.current_width_left = float(left_present.get(self.left_gripper_key, 0.0))
-        self.current_width_right = float(right_present.get(self.right_gripper_key, 0.0))
+        dL_xyz = np.array([a14[0]*sx, a14[1]*sy, a14[2]*sz], dtype=np.float64)
+        dL_rpy = np.array([a14[3]*srx, a14[4]*sry, a14[5]*srz], dtype=np.float64)
+        gL_cmd = float(a14[6])
 
-        q_left_model = self._hw_to_model_q("left", left_present)
-        q_right_model = self._hw_to_model_q("right", right_present)
-        self.current_ee_T_left = self.kinematics_left.forward_kinematics(q_left_model)
-        self.current_ee_T_right = self.kinematics_right.forward_kinematics(q_right_model)
-        # === 修改结束 ===
+        dR_xyz = np.array([a14[7]*sx, a14[8]*sy, a14[9]*sz], dtype=np.float64)
+        dR_rpy = np.array([a14[10]*srx, a14[11]*sry, a14[12]*srz], dtype=np.float64)
+        gR_cmd = float(a14[13])
 
-        # ---- 步长缩放（米） ----
-        sx = float(self.config.end_effector_step_sizes["x"])
-        sy = float(self.config.end_effector_step_sizes["y"])
-        sz = float(self.config.end_effector_step_sizes["z"])
-        l_delta = np.array([action[0]*sx, action[1]*sy, action[2]*sz], dtype=np.float64)
-        r_delta = np.array([action[4]*sx, action[5]*sy, action[6]*sz], dtype=np.float64)
+        out = {}
+        for side, d_xyz, d_rpy, g_cmd in (
+            ("left",  dL_xyz, dL_rpy, gL_cmd),
+            ("right", dR_xyz, dR_rpy, gR_cmd),
+        ):
+            bus   = self.sides[side]["bus"]
+            kin   = self.sides[side]["kin"]
+            armks = self.sides[side]["arm_keys"]
+            gkey  = self.sides[side]["grip_key"]
 
-        # ---- 目标 EE 位姿（保持当前姿态，只改平移） ----
-        Tl = np.eye(4, dtype=np.float64); Tl[:3, :3] = self.current_ee_T_left[:3, :3]
-        Tr = np.eye(4, dtype=np.float64); Tr[:3, :3] = self.current_ee_T_right[:3, :3]
-        Tl[:3, 3] = self.current_ee_T_left[:3, 3] + l_delta
-        Tr[:3, 3] = self.current_ee_T_right[:3, 3] + r_delta
+            present = bus.sync_read("Present_Position")
+            q6, width, q8 = self._present_to_q8(side, present)
+            T_cur = kin.forward_kinematics(q8)
 
-        # ---- 边界裁剪（米）----
-        if self.config.end_effector_bounds_left:
-            Tl[:3, 3] = np.clip(
-                Tl[:3, 3],
-                self.config.end_effector_bounds_left["min"],
-                self.config.end_effector_bounds_left["max"],
+            # 显式姿态控制检测：只有当 Δrpy 的范数超过阈值时才启用姿态约束
+            active_rot = (np.linalg.norm(d_rpy) > float(self.config.orientation_activation_eps))
+
+            # 目标位姿
+            T_tar = self._apply_se3_increment(side, T_cur, d_xyz, d_rpy, active_rot)
+
+            # IK：位置权重固定；姿态权重按需启用
+            q8_tar = kin.inverse_kinematics(
+                q8,
+                T_tar,
+                position_weight=float(self.config.ik_position_weight),
+                orientation_weight=(float(self.config.ik_orientation_weight) if active_rot else 0.0),
             )
-        if self.config.end_effector_bounds_right:
-            Tr[:3, 3] = np.clip(
-                Tr[:3, 3],
-                self.config.end_effector_bounds_right["min"],
-                self.config.end_effector_bounds_right["max"],
-            )
+            q6_tar = np.asarray(q8_tar[:6], dtype=np.float64)
 
-        # ---- IK：用“模型 8 维 q（含手指）”作为初值，但只关心前 6 个旋转关节的结果 ----
-        ql_init8 = self._compose_model_q_from_cache("left")
-        qr_init8 = self._compose_model_q_from_cache("right")
+            # 夹爪
+            width_tar = self._grip_next_width(width, g_cmd)
 
-        ql_target8 = self.kinematics_left.inverse_kinematics(ql_init8, Tl)
-        qr_target8 = self.kinematics_right.inverse_kinematics(qr_init8, Tr)
+            for i, name in enumerate(armks):
+                out[f"{name}.pos"] = float(q6_tar[i])
+            out[f"{gkey}.pos"] = width_tar
 
-        # 取前 6 维作为要下发的关节角
-        ql_target6 = np.asarray(ql_target8[:6], dtype=np.float64)
-        qr_target6 = np.asarray(qr_target8[:6], dtype=np.float64)
+            self.sides[side]["q6"]    = q6_tar
+            self.sides[side]["width"] = width_tar
+            self.sides[side]["T"]     = T_tar
 
-        # ---- 夹爪（增量映射：0..2 → [-1, +1]，乘最大行程再与当前叠加，最后裁剪到 [0, max] 米）----
-        l_new_width = float(np.clip(self.current_width_left  + (float(action[3]) - 1.0) * self.config.max_gripper_pos,
-                                    0.0, self.config.max_gripper_pos))
-        r_new_width = float(np.clip(self.current_width_right + (float(action[7]) - 1.0) * self.config.max_gripper_pos,
-                                    0.0, self.config.max_gripper_pos))
+        return super().send_action(out)
 
-        # ---- 组装关节空间动作（键名要与父类解析一致）----
-        left_joint_names  = self.arm_joint_keys_left
-        right_joint_names = self.arm_joint_keys_right
-        joint_action = {}
-        for i, name in enumerate(left_joint_names):
-            joint_action[f"{name}.pos"] = float(ql_target6[i])
-        for i, name in enumerate(right_joint_names):
-            joint_action[f"{name}.pos"] = float(qr_target6[i])
-
-        joint_action[f"{self.left_gripper_key}.pos"]  = l_new_width
-        joint_action[f"{self.right_gripper_key}.pos"] = r_new_width
-
-        # ---- 更新缓存 ----
-        self.current_q_left  = ql_target6.copy()
-        self.current_q_right = qr_target6.copy()
-        self.current_width_left  = l_new_width
-        self.current_width_right = r_new_width
-        self.current_ee_T_left  = Tl.copy()
-        self.current_ee_T_right = Tr.copy()
-
-        # 交给父类做安全裁剪（max_relative_target）并通过总线下发
-        return super().send_action(joint_action)
-
-    # 可选：覆写 reset 以清缓存
     def reset(self):
-        self.current_q_left = None
-        self.current_q_right = None
-        self.current_width_left = None
-        self.current_width_right = None
-        self.current_ee_T_left = None
-        self.current_ee_T_right = None
+        for side in ("left", "right"):
+            self.sides[side]["q6"] = None
+            self.sides[side]["width"] = None
+            self.sides[side]["T"] = None
