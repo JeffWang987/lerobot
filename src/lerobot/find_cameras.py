@@ -42,6 +42,8 @@ from lerobot.cameras.opencv.camera_opencv import OpenCVCamera
 from lerobot.cameras.opencv.configuration_opencv import OpenCVCameraConfig
 from lerobot.cameras.realsense.camera_realsense import RealSenseCamera
 from lerobot.cameras.realsense.configuration_realsense import RealSenseCameraConfig
+from lerobot.cameras.dabai.camera_dabai import OrbbecDabaiCamera
+from lerobot.cameras.dabai.configuration_dabai import OrbbecDabaiCameraConfig
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +89,26 @@ def find_all_realsense_cameras() -> list[dict[str, Any]]:
 
     return all_realsense_cameras_info
 
+def find_all_dabai_cameras() -> list[dict[str, Any]]:
+    """
+    Finds all available dabai(OrbbecDabai) cameras plugged into the system.
+
+    Returns:
+        A list of all available OrbbecDabai cameras with their metadata.
+    """
+    all_dabai_cameras_info: list[dict[str, Any]] = []
+    logger.info("Searching for Dabai cameras...")
+    try:
+        dabai_cameras = OrbbecDabaiCamera.find_cameras()
+        for cam_info in dabai_cameras:
+            all_dabai_cameras_info.append(cam_info)
+        logger.info(f"Found {len(dabai_cameras)} Dabai cameras.")
+    except ImportError:
+        logger.warning("Skipping Dabai camera search: pyorbbecsdk library not found or not importable.")
+    except Exception as e:
+        logger.error(f"Error finding Dabai cameras: {e}")
+
+    return all_dabai_cameras_info
 
 def find_and_print_cameras(camera_type_filter: str | None = None) -> list[dict[str, Any]]:
     """
@@ -108,6 +130,8 @@ def find_and_print_cameras(camera_type_filter: str | None = None) -> list[dict[s
         all_cameras_info.extend(find_all_opencv_cameras())
     if camera_type_filter is None or camera_type_filter == "realsense":
         all_cameras_info.extend(find_all_realsense_cameras())
+    if camera_type_filter is None or camera_type_filter == "dabai":
+        all_cameras_info.extend(find_all_dabai_cameras())
 
     if not all_cameras_info:
         if camera_type_filter:
@@ -172,8 +196,17 @@ def create_camera_instance(cam_meta: dict[str, Any]) -> dict[str, Any] | None:
             rs_config = RealSenseCameraConfig(
                 serial_number_or_name=cam_id,
                 color_mode=ColorMode.RGB,
+                fps = 30,
+                width = 640,
+                height = 480,
             )
             instance = RealSenseCamera(rs_config)
+        elif cam_type == "Orbbec":
+            dabai_config = OrbbecDabaiCameraConfig(
+                serial_number_or_name=cam_id,
+                color_mode=ColorMode.RGB,
+            )
+            instance = OrbbecDabaiCamera(dabai_config)
         else:
             logger.warning(f"Unknown camera type: {cam_type} for ID {cam_id}. Skipping.")
             return None
@@ -239,7 +272,7 @@ def save_images_from_all_cameras(
     Args:
         output_dir: Directory to save images.
         record_time_s: Duration in seconds to record images.
-        camera_type: Optional string to filter cameras ("realsense" or "opencv").
+        camera_type: Optional string to filter cameras ("realsense", "opencv" or "dabai").
                             If None, uses all detected cameras.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -296,8 +329,8 @@ def main():
         type=str,
         nargs="?",
         default=None,
-        choices=["realsense", "opencv"],
-        help="Specify camera type to capture from (e.g., 'realsense', 'opencv'). Captures from all if omitted.",
+        choices=["realsense", "opencv", "dabai"],
+        help="Specify camera type to capture from (e.g., 'realsense', 'opencv', 'dabai'). Captures from all if omitted.",
     )
     parser.add_argument(
         "--output-dir",

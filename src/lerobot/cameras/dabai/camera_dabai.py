@@ -19,7 +19,7 @@ Provides the OrbbecDabaiCamera class for capturing frames from Orbbec Dabai came
 import logging
 import time
 from threading import Event, Lock, Thread
-from typing import Any, Optional
+from typing import Union, Any, Optional
 
 import cv2
 import numpy as np
@@ -34,7 +34,7 @@ from ..camera import Camera
 from ..configs import ColorMode
 from ..utils import get_cv2_rotation
 from .configuration_dabai import OrbbecDabaiCameraConfig  # 可复用配置
-
+from .utils import frame_to_numpy_image, save_color_frame
 logger = logging.getLogger(__name__)
 
 
@@ -105,14 +105,18 @@ class OrbbecDabaiCamera(Camera):
         target_device = None
         for i in range(devices.get_count()):
             dev = devices.get_device_by_index(i)
-            sn = dev.get_info(ob.OBDeviceInfo.OB_DEVICE_INFO_SERIAL_NUMBER)
+            device_info = dev.get_device_info()
+
+            #dev_info = devices_info.get_device_info_by_index(i)
+            sn = device_info.get_serial_number()
+            #sn = dev.get_info(ob.OBDeviceInfo.OB_DEVICE_INFO_SERIAL_NUMBER)
             if sn == self.serial_number:
                 target_device = dev
                 break
 
         if not target_device:
             available_sn = [
-                devices.get_device_by_index(i).get_info(ob.OBDeviceInfo.OB_DEVICE_INFO_SERIAL_NUMBER)
+                devices.get_device_by_index(i).get_device_info().get_serial_number()
                 for i in range(devices.get_count())
             ]
             raise ValueError(f"Orbbec Dabai with SN '{self.serial_number}' not found. Available: {available_sn}")
@@ -121,46 +125,74 @@ class OrbbecDabaiCamera(Camera):
         self.pipeline = ob.Pipeline(self.device)
 
         config = ob.Config()
-
+        depth_profile = None
+        color_profile = None
         # 配置流
         if self.width and self.height and self.fps:
+            profile_list = self.pipeline.get_stream_profile_list(ob.OBSensorType.COLOR_SENSOR)
+            try:
+                color_profile: ob.VideoStreamProfile = profile_list.get_video_stream_profile(self.width, self.height, ob.OBFormat.RGB, self.fps)
+            except ob.OBError as e:
+                print(f"Error getting color profile: {e}")
+                color_profile = profile_list.get_default_video_stream_profile()
+            config.enable_stream(color_profile)
             if self.use_depth:
-                depth_profile = ob.VideoStreamProfile(self.capture_width, self.capture_height, ob.OBFormat.OB_FORMAT_Y16, self.fps)
-                config.enable_stream(ob.OBStreamType.OB_STREAM_DEPTH, depth_profile)
-            color_profile = ob.VideoStreamProfile(self.capture_width, self.capture_height, ob.OBFormat.OB_FORMAT_RGB8, self.fps)
-            config.enable_stream(ob.OBStreamType.OB_STREAM_COLOR, color_profile)
+                profile_list = self.pipeline.get_stream_profile_list(ob.OBSensorType.DEPTH_SENSOR)
+                try:
+                    depth_profile: ob.VideoStreamProfile = profile_list.get_video_stream_profile(self.width, self.height, ob.OBFormat.Y16, self.fps)
+                except ob.OBError as e:
+                    print(f"Error getting depth profile: {e}")
+                    depth_profile = profile_list.get_default_video_stream_profile()
+                config.enable_stream(depth_profile)
         else:
-            config.enable_stream(ob.OBStreamType.OB_STREAM_COLOR)
+            profile_list = self.pipeline.get_stream_profile_list(ob.OBSensorType.COLOR_SENSOR)
+            try:
+                color_profile: ob.VideoStreamProfile = profile_list.get_video_stream_profile(640, 0, ob.OBFormat.RGB, 30) #get_default_video_stream_profile()
+            except ob.OBError as e:
+                print(f"Error getting color profile: {e}")
+                color_profile = profile_list.get_default_video_stream_profile()
+            config.enable_stream(color_profile)
             if self.use_depth:
-                config.enable_stream(ob.OBStreamType.OB_STREAM_DEPTH)
+                profile_list = self.pipeline.get_stream_profile_list(ob.OBSensorType.DEPTH_SENSOR)
+                try:
+                    depth_profile: ob.VideoStreamProfile = profile_list.get_video_stream_profile(640, 0, ob.OBFormat.Y16, 30) #get_default_video_stream_profile()
+                except ob.OBError as e:
+                    print(f"Error getting depth profile: {e}")
+                    depth_profile = profile_list.get_default_video_stream_profile()
+                config.enable_stream(depth_profile)
 
         try:
-            self.pipeline.start(config, None)
+            self.pipeline.start(config)
         except Exception as e:
             self.pipeline = None
             self.device = None
+            self.depth_profile = None
+            self.color_profile = None
             raise ConnectionError(f"Failed to start pipeline for {self}: {e}")
 
         # 获取实际流配置
-        profile = self.pipeline.get_active_profile()
-        color_stream = profile.get_stream(ob.OBStreamType.OB_STREAM_COLOR)
-        if color_stream:
-            self.color_profile = color_stream.as_video_stream_profile()
-            if self.fps is None:
-                self.fps = self.color_profile.fps()
-            if self.width is None or self.height is None:
-                w, h = self.color_profile.width(), self.color_profile.height()
-                if self.rotation in [cv2.ROTATE_90_CLOCKWISE, cv2.ROTATE_90_COUNTERCLOCKWISE]:
-                    self.width, self.height = h, w
-                    self.capture_width, self.capture_height = w, h
-                else:
-                    self.width, self.height = w, h
-                    self.capture_width, self.capture_height = w, h
+        # profile = self.pipeline.get_active_profile()
+        # color_stream = profile.get_stream(ob.OBStreamType.OB_STREAM_COLOR)
+        # if color_stream:
+        #     self.color_profile = color_stream.as_video_stream_profile()
+        #     if self.fps is None:
+        #         self.fps = self.color_profile.fps()
+        #     if self.width is None or self.height is None:
+        #         w, h = self.color_profile.width(), self.color_profile.height()
+        #         if self.rotation in [cv2.ROTATE_90_CLOCKWISE, cv2.ROTATE_90_COUNTERCLOCKWISE]:
+        #             self.width, self.height = h, w
+        #             self.capture_width, self.capture_height = w, h
+        #         else:
+        #             self.width, self.height = w, h
+        #             self.capture_width, self.capture_height = w, h
 
+        # if self.use_depth:
+        #     depth_stream = profile.get_stream(ob.OBStreamType.OB_STREAM_DEPTH)
+        #     if depth_stream:
+        #         self.depth_profile = depth_stream.as_video_stream_profile()
+        self.color_profile = color_profile
         if self.use_depth:
-            depth_stream = profile.get_stream(ob.OBStreamType.OB_STREAM_DEPTH)
-            if depth_stream:
-                self.depth_profile = depth_stream.as_video_stream_profile()
+            self.depth_profile = depth_profile
 
         if warmup:
             time.sleep(1)
@@ -174,42 +206,109 @@ class OrbbecDabaiCamera(Camera):
 
         logger.info(f"{self} connected.")
 
+    # @staticmethod
+    # def find_cameras2() -> list[dict[str, Any]]:
+    #     """Detect available Orbbec cameras."""
+    #     ctx = ob.Context()
+    #     devices_info = ctx.query_devices()
+    #     cameras = []
+
+    #     for i in range(devices_info.get_count()):
+    #         dev_info = devices_info.get_device_info_by_index(i)
+    #         sn = dev_info.get_info(ob.OBDeviceInfo.OB_DEVICE_INFO_SERIAL_NUMBER)
+    #         name = dev_info.get_info(ob.OBDeviceInfo.OB_DEVICE_INFO_NAME)
+    #         firmware = dev_info.get_info(ob.OBDeviceInfo.OB_DEVICE_INFO_FIRMWARE_VERSION)
+    #         usb_type = dev_info.get_info(ob.OBDeviceInfo.OB_DEVICE_INFO_USB_TYPE)
+
+
+    #         camera_info = {
+    #             "name": name,
+    #             "type": "Orbbec",
+    #             "id": sn,
+    #             "firmware_version": firmware,
+    #             "usb_type_descriptor": usb_type,
+    #         }
+
+    #         # 打开设备获取流信息
+    #         try:
+    #             dev = ctx.get_device_by_sn(sn)
+    #             pipeline = ob.Pipeline(dev)
+    #             config = ob.Config()
+    #             config.enable_stream(ob.OBStreamType.OB_STREAM_COLOR)
+    #             profile = pipeline.start(config, None)
+    #             color_stream = profile.get_stream(ob.OBStreamType.OB_STREAM_COLOR).as_video_stream_profile()
+    #             camera_info["default_stream_profile"] = {
+    #                 "stream_type": "Color",
+    #                 "format": "RGB8",
+    #                 "width": color_stream.width(),
+    #                 "height": color_stream.height(),
+    #                 "fps": color_stream.fps(),
+    #             }
+    #             pipeline.stop()
+    #         except Exception as e:
+    #             logger.warning(f"Could not get stream profile for {name}: {e}")
+    #             camera_info["default_stream_profile"] = {}
+
+    #         cameras.append(camera_info)
+
+    #     return cameras
+
     @staticmethod
     def find_cameras() -> list[dict[str, Any]]:
         """Detect available Orbbec cameras."""
         ctx = ob.Context()
-        devices_info = ctx.query_devices()
+        devices_list = ctx.query_devices()
         cameras = []
 
-        for i in range(devices_info.get_count()):
-            dev_info = devices_info.get_device_info_by_index(i)
-            sn = dev_info.get_info(ob.OBDeviceInfo.OB_DEVICE_INFO_SERIAL_NUMBER)
-            name = dev_info.get_info(ob.OBDeviceInfo.OB_DEVICE_INFO_NAME)
-            firmware = dev_info.get_info(ob.OBDeviceInfo.OB_DEVICE_INFO_FIRMWARE_VERSION)
-            usb_type = dev_info.get_info(ob.OBDeviceInfo.OB_DEVICE_INFO_USB_TYPE)
+        for i in range(devices_list.get_count()):
+            device = devices_list.get_device_by_index(i)
+            device_info = device.get_device_info()
 
+            #dev_info = devices_info.get_device_info_by_index(i)
+            sn = device_info.get_serial_number()
+            name = device_info.get_name()
+            firmware = device_info.get_firmware_version()
+            connection_type = device_info.get_connection_type()
+            print("-----------------------------------------------------------")
+            print(f"Device info: {device_info}")
             camera_info = {
                 "name": name,
                 "type": "Orbbec",
                 "id": sn,
                 "firmware_version": firmware,
-                "usb_type_descriptor": usb_type,
+                "usb_type_descriptor": connection_type,
             }
 
             # 打开设备获取流信息
+            has_color_sensor = False
             try:
-                dev = ctx.get_device_by_sn(sn)
-                pipeline = ob.Pipeline(dev)
+                # 使用已经获取的设备对象
+                pipeline = ob.Pipeline(device)
                 config = ob.Config()
-                config.enable_stream(ob.OBStreamType.OB_STREAM_COLOR)
-                profile = pipeline.start(config, None)
-                color_stream = profile.get_stream(ob.OBStreamType.OB_STREAM_COLOR).as_video_stream_profile()
+                profile_list = pipeline.get_stream_profile_list(ob.OBSensorType.COLOR_SENSOR)
+                if profile_list is not None:
+                    color_profile: ob.VideoStreamProfile = profile_list.get_default_video_stream_profile()
+                    config.enable_stream(color_profile)
+                    has_color_sensor = True
+                #config.enable_stream(ob.OBStreamType.OB_STREAM_COLOR)
+                depth_profile_list = pipeline.get_stream_profile_list(ob.OBSensorType.DEPTH_SENSOR)
+                if depth_profile_list is not None:
+                    depth_profile: ob.VideoStreamProfile = depth_profile_list.get_default_video_stream_profile()
+                    config.enable_stream(depth_profile)
+                pipeline.start(config, None)
+                #color_stream = profile.get_stream(ob.OBStreamType.OB_STREAM_COLOR).as_video_stream_profile()
+                # frames = pipeline.wait_for_frames(100)
+                # color_frame = frames.get_color_frame()
+                # if color_frame is not None:
+                #     width = color_frame.get_width()
+                #     height = color_frame.get_height()
+                #     fps = color_frame.get_fps()
                 camera_info["default_stream_profile"] = {
                     "stream_type": "Color",
                     "format": "RGB8",
-                    "width": color_stream.width(),
-                    "height": color_stream.height(),
-                    "fps": color_stream.fps(),
+                    "width": color_profile.get_width(),
+                    "height": color_profile.get_height(),
+                    "fps": color_profile.get_fps(),
                 }
                 pipeline.stop()
             except Exception as e:
@@ -237,9 +336,11 @@ class OrbbecDabaiCamera(Camera):
             color_frame = frames.get_color_frame()
             if color_frame is None:
                 raise RuntimeError(f"{self} no color frame received.")
-            data = np.frombuffer(color_frame.get_data(), dtype=np.uint8)
-            w, h = color_frame.get_width(), color_frame.get_height()
-            color_image_raw = data.reshape((h, w, 3))  # RGB8
+            #save_color_frame(color_frame, 0)
+            color_image_raw = frame_to_numpy_image(color_frame)
+            #data = np.frombuffer(color_frame.get_data(), dtype=np.uint8)
+            #w, h = color_frame.get_width(), color_frame.get_height()
+            #color_image_raw = data.reshape((h, w, 3))  # RGB8
         except Exception as e:
             raise RuntimeError(f"{self} read failed: {e}")
 
@@ -275,10 +376,10 @@ class OrbbecDabaiCamera(Camera):
         target_mode = color_mode or self.color_mode
         h, w = image.shape[:2]
 
-        if h != self.capture_height or w != self.capture_width:
-            raise RuntimeError(
-                f"Frame size ({w}x{h}) != configured ({self.capture_width}x{self.capture_height})"
-            )
+        # if h != self.capture_height or w != self.capture_width:
+        #     raise RuntimeError(
+        #         f"Frame size ({w}x{h}) != configured ({self.capture_width}x{self.capture_height})"
+        #     )
 
         processed = image
 
@@ -349,3 +450,4 @@ class OrbbecDabaiCamera(Camera):
         self.device = None
 
         logger.info(f"{self} disconnected.")
+
