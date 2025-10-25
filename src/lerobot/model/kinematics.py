@@ -91,7 +91,10 @@ class RobotKinematics:
             desired_ee_pose: Target end-effector pose as a 4x4 transformation matrix
             position_weight: Weight for position constraint in IK
             orientation_weight: Weight for orientation constraint in IK, set to 0.0 to only constrain position
-
+            current_joint_pos: 当前关节位置（以度为单位，用作初始猜测值）
+            desired_ee_pose: 目标末端执行器位姿，以4x4变换矩阵表示
+            position_weight: 逆运动学中位置约束的权重
+            orientation_weight: 逆运动学中姿态约束的权重，设为0.0时仅约束位置
         Returns:
             Joint positions in degrees that achieve the desired end-effector pose
         """
