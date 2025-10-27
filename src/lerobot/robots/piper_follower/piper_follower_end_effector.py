@@ -2,11 +2,12 @@
 # -*- coding: utf-8 -*-
 
 import logging
+import time
 from typing import Any
 import numpy as np
 
 from lerobot.cameras.utils import make_cameras_from_configs
-from lerobot.errors import DeviceNotConnectedError
+from lerobot.utils.errors import DeviceNotConnectedError
 from lerobot.model.kinematics import RobotKinematics
 
 from .piper_follower import PiperFollower
@@ -225,3 +226,32 @@ class PiperFollowerEndEffector(PiperFollower):
             self.sides[side]["q6"] = None
             self.sides[side]["width"] = None
             self.sides[side]["T"] = None
+
+    def get_observation(self) -> dict[str, Any]:
+        if not self.is_connected:
+            raise DeviceNotConnectedError(f"{self} is not connected.")
+
+        # Read arm position from both arms
+        start = time.perf_counter()
+        
+        # 左臂位置
+        left_positions = self.bus_left.sync_read("Present_Position")
+        obs_dict = {f"{motor}.pos": val for motor, val in left_positions.items()}
+        
+        # 右臂位置
+        right_positions = self.bus_right.sync_read("Present_Position")
+        obs_dict.update({f"{motor}.pos": val for motor, val in right_positions.items()})
+        
+        dt_ms = (time.perf_counter() - start) * 1e3
+        logger.debug(f"{self} read dual-arm state: {dt_ms:.1f}ms")
+
+        # Capture images from cameras
+        for cam_key, cam in self.cameras.items():
+            start = time.perf_counter()
+            image = cam.async_read()
+            if image is not None:
+                obs_dict[cam_key] = image
+            dt_ms = (time.perf_counter() - start) * 1e3
+            logger.debug(f"{self} read {cam_key}: {dt_ms:.1f}ms")
+
+        return obs_dict

@@ -29,7 +29,7 @@ try:
 except Exception as e:
     logging.info(f"Could not import Orbbec SDK: {e}")
 
-from lerobot.errors import DeviceAlreadyConnectedError, DeviceNotConnectedError
+from lerobot.utils.errors import DeviceAlreadyConnectedError, DeviceNotConnectedError
 from ..camera import Camera
 from ..configs import ColorMode
 from ..utils import get_cv2_rotation

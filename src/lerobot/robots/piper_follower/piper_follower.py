@@ -22,7 +22,7 @@ from typing import Dict, Any
 from traceback import format_exc
 
 from lerobot.cameras.utils import make_cameras_from_configs
-from lerobot.errors import DeviceAlreadyConnectedError, DeviceNotConnectedError
+from lerobot.utils.errors import DeviceAlreadyConnectedError, DeviceNotConnectedError
 from lerobot.motors.piper import (
     PiperMotorsBus,
 )

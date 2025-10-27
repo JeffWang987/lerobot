@@ -329,8 +329,8 @@ def main():
         type=str,
         nargs="?",
         default=None,
-        choices=["realsense", "opencv", "dabai"],
-        help="Specify camera type to capture from (e.g., 'realsense', 'opencv', 'dabai'). Captures from all if omitted.",
+        choices=["realsense", "opencv", "orbbec_dabai"],
+        help="Specify camera type to capture from (e.g., 'realsense', 'opencv', 'orbbec_dabai'). Captures from all if omitted.",
     )
     parser.add_argument(
         "--output-dir",
