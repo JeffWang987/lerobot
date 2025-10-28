@@ -165,8 +165,10 @@ class Classifier(PreTrainedPolicy):
         encoder = nn.Sequential(
             self.encoder,
             SpatialLearnedEmbeddings(
-                height=4,
-                width=4,
+                #height=4,
+                #width=4,
+                height=15,  # ResNet-18 输出高度
+                width=20,   # ResNet-18 输出宽度
                 channel=self.feature_dim,
                 num_features=self.config.image_embedding_pooling_dim,
             ),
