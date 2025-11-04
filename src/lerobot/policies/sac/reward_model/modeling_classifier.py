@@ -268,12 +268,28 @@ class Classifier(PreTrainedPolicy):
 
     def predict_reward(self, batch, threshold=0.5):
         """Eval method. Returns predicted reward with the decision threshold as argument."""
-        # Check for both OBS_IMAGE and OBS_IMAGES prefixes
+        # Normalize (no-op by default)
         batch = self.normalize_inputs(batch)
         batch = self.normalize_targets(batch)
 
-        # Extract images from batch dict
-        images = [batch[key] for key in self.config.input_features if key.startswith(OBS_IMAGE)]
+        # Collect expected image keys and gracefully handle missing/alt names
+        expected_image_keys = [key for key in self.config.input_features if key.startswith(OBS_IMAGE)]
+        images = []
+        for key in expected_image_keys:
+            if key in batch:
+                images.append(batch[key])
+            else:
+                alt_key = key.replace(".", "_")
+                if alt_key in batch:
+                    images.append(batch[alt_key])
+
+        # If not all required images are present, return negative (no success)
+        if len(images) != len(expected_image_keys):
+            return 0.0
+
+        # Move images to the same device as the model parameters
+        model_device = next(self.parameters()).device
+        images = [x.to(model_device) for x in images]
 
         if self.config.num_classes == 2:
             probs = self.predict(images).probabilities
@@ -306,3 +322,21 @@ class Classifier(PreTrainedPolicy):
         The reward classifier is not an actor and does not select actions.
         """
         pass
+
+    # ---------------------------------------------------------------
+    # Compatibility normalization helpers (no-op by default)
+    # ---------------------------------------------------------------
+    def normalize_inputs(self, batch: dict[str, Tensor]) -> dict[str, Tensor]:
+        """
+        Normalize input batch if needed. Provided for backward compatibility.
+        Currently acts as a no-op passthrough since preprocessing is handled by
+        external processor pipelines. Keeps API expected by older code.
+        """
+        return batch
+
+    def normalize_targets(self, batch: dict[str, Tensor]) -> dict[str, Tensor]:
+        """
+        Normalize targets in batch if needed. Provided for backward compatibility.
+        Currently acts as a no-op passthrough.
+        """
+        return batch

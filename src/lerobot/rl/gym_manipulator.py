@@ -38,6 +38,7 @@ from lerobot.processor import (
     GripperPenaltyProcessorStep,
     ImageCropResizeProcessorStep,
     InterventionActionProcessorStep,
+    RenameObservationsProcessorStep,
     JointVelocityProcessorStep,
     MapDeltaActionToRobotActionStep,
     MapTensorToDeltaActionDictStep,
@@ -56,6 +57,7 @@ from lerobot.robots import (  # noqa: F401
     RobotConfig,
     make_robot_from_config,
     so100_follower,
+    piper_follower,
 )
 from lerobot.robots.robot import Robot
 from lerobot.robots.so100_follower.robot_kinematic_processor import (
@@ -71,12 +73,18 @@ from lerobot.teleoperators import (
     make_teleoperator_from_config,
     so101_leader,  # noqa: F401
 )
+
 from lerobot.teleoperators.teleoperator import Teleoperator
 from lerobot.teleoperators.utils import TeleopEvents
 from lerobot.utils.constants import ACTION, DONE, OBS_IMAGES, OBS_STATE, REWARD
 from lerobot.utils.robot_utils import busy_wait
 from lerobot.utils.utils import log_say
-
+from lerobot.cameras import (  # noqa: F401 - 导入相机以触发注册
+    opencv,
+    realsense,
+    dabai,
+)
+import pdb
 logging.basicConfig(level=logging.INFO)
 
 
@@ -108,6 +116,7 @@ def reset_follower_position(robot_arm: Robot, target_position: np.ndarray) -> No
     current_position = np.array(
         [current_position_dict[name] for name in current_position_dict], dtype=np.float32
     )
+    # pdb.set_trace()
     trajectory = torch.from_numpy(
         np.linspace(current_position, target_position, 50)
     )  # NOTE: 30 is just an arbitrary number
@@ -150,7 +159,7 @@ class RobotEnv(gym.Env):
         self.current_step = 0
         self.episode_data = None
 
-        self._joint_names = [f"{key}.pos" for key in self.robot.bus.motors]
+        # self._joint_names = [f"{key}.pos" for key in self.robot.bus.motors]
         self._image_keys = self.robot.cameras.keys()
 
         self.reset_pose = reset_pose
@@ -158,7 +167,8 @@ class RobotEnv(gym.Env):
 
         self.use_gripper = use_gripper
 
-        self._joint_names = list(self.robot.bus.motors.keys())
+        # self._joint_names = list(self.robot.bus.motors.keys())
+        self._joint_names = self.robot.bus.motors
         self._raw_joint_positions = None
 
         self._setup_spaces()
@@ -166,6 +176,7 @@ class RobotEnv(gym.Env):
     def _get_observation(self) -> dict[str, Any]:
         """Get current robot observation including joint positions and camera images."""
         obs_dict = self.robot.get_observation()
+        # pdb.set_trace()
         raw_joint_joint_position = {f"{name}.pos": obs_dict[f"{name}.pos"] for name in self._joint_names}
         joint_positions = np.array([raw_joint_joint_position[f"{name}.pos"] for name in self._joint_names])
 
@@ -251,7 +262,7 @@ class RobotEnv(gym.Env):
 
     def step(self, action) -> tuple[dict[str, np.ndarray], float, bool, bool, dict[str, Any]]:
         """Execute one environment step with given action."""
-        joint_targets_dict = {f"{key}.pos": action[i] for i, key in enumerate(self.robot.bus.motors.keys())}
+        joint_targets_dict = {f"{key}.pos": action[i] for i, key in enumerate(self.robot.bus.motors)}
 
         self.robot.send_action(joint_targets_dict)
 
@@ -392,18 +403,44 @@ def make_processors(
 
     # Full processor pipeline for real robot environment
     # Get robot and motor information for kinematics
-    motor_names = list(env.robot.bus.motors.keys())
+    
 
+    # 映射：bus 电机名 -> URDF 关节名（顺序必须与 motor_names 一致）
+    # 1) bus 层电机名
+    motor_names = env.robot.bus.motors
+
+    # 2) 拆分：臂的6关节 vs 夹爪
+    # arm_motor_names = [m for m in motor_names if "gripper" not in m]  # 或者直接 motor_names[:6]
+    # gripper_motor_names = [m for m in motor_names if "gripper" in m]  # 可为空或1个
+
+    # 3) 只为“臂的6关节”做 URDF 名映射（按你的 URDF 实际名字改）
+    # name_map = {
+    #     "left_joint_1": "joint1",
+    #     "left_joint_2": "joint2",
+    #     "left_joint_3": "joint3",
+    #     "left_joint_4": "joint4",
+    #     "left_joint_5": "joint5",
+    #     "left_joint_6": "joint6",
+    # }
+    # ik_joint_names = [name_map.get(n, n) for n in arm_motor_names]
+    # pdb.set_trace()
     # Set up kinematics solver if inverse kinematics is configured
     kinematics_solver = None
     if cfg.processor.inverse_kinematics is not None:
         kinematics_solver = RobotKinematics(
             urdf_path=cfg.processor.inverse_kinematics.urdf_path,
             target_frame_name=cfg.processor.inverse_kinematics.target_frame_name,
-            joint_names=motor_names,
+            joint_names=motor_names[:-1],
+            # joint_names=ik_joint_names,
         )
 
     env_pipeline_steps = [VanillaObservationProcessorStep()]
+
+    # If environment feature keys differ from policy keys, insert a rename step
+    if cfg.features_map:
+        rename_map = {src: dst for src, dst in cfg.features_map.items() if src != dst}
+        if rename_map:
+            env_pipeline_steps.append(RenameObservationsProcessorStep(rename_map=rename_map))
 
     if cfg.processor.observation is not None:
         if cfg.processor.observation.add_joint_velocity_to_observation:
@@ -416,6 +453,8 @@ def make_processors(
             ForwardKinematicsJointsToEEObservation(
                 kinematics=kinematics_solver,
                 motor_names=motor_names,
+                # motor_names=arm_motor_names
+                # motor_names=ik_joint_names,
             )
         )
 
@@ -480,6 +519,8 @@ def make_processors(
                 kinematics=kinematics_solver,
                 end_effector_step_sizes=cfg.processor.inverse_kinematics.end_effector_step_sizes,
                 motor_names=motor_names,
+                # motor_names=arm_motor_names,
+                # motor_names=ik_joint_names,
                 use_latched_reference=False,
                 use_ik_solution=True,
             ),
@@ -492,7 +533,11 @@ def make_processors(
                 discrete_gripper=True,
             ),
             InverseKinematicsRLStep(
-                kinematics=kinematics_solver, motor_names=motor_names, initial_guess_current_joints=False
+                kinematics=kinematics_solver, 
+                motor_names=motor_names, 
+                # motor_names=arm_motor_names,
+                # motor_names=ik_joint_names
+                initial_guess_current_joints=False
             ),
         ]
         action_pipeline_steps.extend(inverse_kinematics_steps)
@@ -525,7 +570,7 @@ def step_env_and_process_transition(
     Returns:
         Processed transition with updated state.
     """
-
+    # pdb.set_trace()
     # Create action transition
     transition[TransitionKey.ACTION] = action
     transition[TransitionKey.OBSERVATION] = (
@@ -753,7 +798,7 @@ def main(cfg: GymManipulatorConfig) -> None:
     """Main entry point for gym manipulator script."""
     env, teleop_device = make_robot_env(cfg.env)
     env_processor, action_processor = make_processors(env, teleop_device, cfg.env, cfg.device)
-
+    
     print("Environment observation space:", env.observation_space)
     print("Environment action space:", env.action_space)
     print("Environment processor:", env_processor)

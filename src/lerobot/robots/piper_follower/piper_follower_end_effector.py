@@ -5,7 +5,7 @@ import logging
 import time
 from typing import Any
 import numpy as np
-
+import pdb
 from lerobot.cameras.utils import make_cameras_from_configs
 from lerobot.utils.errors import DeviceNotConnectedError
 from lerobot.model.kinematics import RobotKinematics
@@ -64,7 +64,7 @@ class PiperFollowerEndEffector(PiperFollower):
                     kin.joint_names = model_joint_order
                 except Exception:
                     pass
-
+        pdb.set_trace()
         self.cameras = make_cameras_from_configs(config.cameras)
 
         self.sides = {

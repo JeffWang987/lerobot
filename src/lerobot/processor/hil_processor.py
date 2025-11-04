@@ -14,7 +14,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+import pdb
 import math
 import time
 from dataclasses import dataclass
@@ -118,6 +118,7 @@ class AddTeleopActionAsComplimentaryDataStep(ComplementaryDataProcessorStep):
         """
         new_complementary_data = dict(complementary_data)
         new_complementary_data[TELEOP_ACTION_KEY] = self.teleop_device.get_action()
+        # pdb.set_trace()
         return new_complementary_data
 
     def transform_features(
@@ -157,9 +158,11 @@ class AddTeleopEventsAsInfoStep(InfoProcessorStep):
             A new dictionary including the teleoperator events.
         """
         new_info = dict(info)
-
+        
         teleop_events = self.teleop_device.get_teleop_events()
         new_info.update(teleop_events)
+        # if (teleop_events[TeleopEvents.IS_INTERVENTION]):
+        #     print(new_info)
         return new_info
 
     def transform_features(
@@ -420,6 +423,7 @@ class InterventionActionProcessorStep(ProcessorStep):
             The modified transition, potentially with an overridden action, updated
             reward, and termination status.
         """
+        # pdb.set_trace()
         action = transition.get(TransitionKey.ACTION)
         if not isinstance(action, PolicyAction):
             raise ValueError(f"Action should be a PolicyAction type got {type(action)}")
@@ -428,13 +432,14 @@ class InterventionActionProcessorStep(ProcessorStep):
         info = transition.get(TransitionKey.INFO, {})
         complementary_data = transition.get(TransitionKey.COMPLEMENTARY_DATA, {})
         teleop_action = complementary_data.get(TELEOP_ACTION_KEY, {})
+        # print(teleop_action)
         is_intervention = info.get(TeleopEvents.IS_INTERVENTION, False)
         terminate_episode = info.get(TeleopEvents.TERMINATE_EPISODE, False)
         success = info.get(TeleopEvents.SUCCESS, False)
         rerecord_episode = info.get(TeleopEvents.RERECORD_EPISODE, False)
 
         new_transition = transition.copy()
-
+        # print("is_intervention:",is_intervention)
         # Override action if intervention is active
         if is_intervention and teleop_action is not None:
             if isinstance(teleop_action, dict):
@@ -444,6 +449,7 @@ class InterventionActionProcessorStep(ProcessorStep):
                     teleop_action.get("delta_y", 0.0),
                     teleop_action.get("delta_z", 0.0),
                 ]
+                print(action_list)
                 if self.use_gripper:
                     action_list.append(teleop_action.get(GRIPPER_KEY, 1.0))
             elif isinstance(teleop_action, np.ndarray):
@@ -543,8 +549,22 @@ class RewardClassifierProcessorStep(ProcessorStep):
         if observation is None or self.reward_classifier is None:
             return new_transition
 
-        # Extract images from observation
-        images = {key: value for key, value in observation.items() if "image" in key}
+        # Build a batch dict with keys matching classifier's expected input image keys
+        try:
+            expected_image_keys = [
+                key for key in self.reward_classifier.config.input_features if "image" in key
+            ]
+        except Exception:
+            expected_image_keys = []
+
+        images = {}
+        for key in expected_image_keys:
+            if key in observation:
+                images[key] = observation[key]
+            else:
+                alt_key = key.replace(".", "_")
+                if alt_key in observation:
+                    images[key] = observation[alt_key]
 
         if not images:
             return new_transition

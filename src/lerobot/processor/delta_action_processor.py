@@ -40,6 +40,8 @@ class MapTensorToDeltaActionDictStep(ActionProcessorStep):
     use_gripper: bool = True
 
     def action(self, action: PolicyAction) -> RobotAction:
+        # import pdb
+        # pdb.set_trace()
         if not isinstance(action, PolicyAction):
             raise ValueError("Only PolicyAction is supported for this processor")
 

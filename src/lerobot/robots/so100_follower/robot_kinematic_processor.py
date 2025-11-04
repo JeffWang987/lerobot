@@ -16,7 +16,7 @@
 
 from dataclasses import dataclass, field
 from typing import Any
-
+import pdb
 import numpy as np
 
 from lerobot.configs.types import FeatureType, PipelineFeatureType, PolicyFeature
@@ -404,12 +404,13 @@ def compute_forward_kinematics_joints_to_ee(
     joints: dict[str, Any], kinematics: RobotKinematics, motor_names: list[str]
 ) -> dict[str, Any]:
     motor_joint_values = [joints[f"{n}.pos"] for n in motor_names]
-
+    # pdb.set_trace()
     q = np.array(motor_joint_values, dtype=float)
     t = kinematics.forward_kinematics(q)
     pos = t[:3, 3]
     tw = Rotation.from_matrix(t[:3, :3]).as_rotvec()
     gripper_pos = joints["gripper.pos"]
+    # gripper_pos = joints["left_gripper.pos"]
     for n in motor_names:
         joints.pop(f"{n}.pos")
     joints["ee.x"] = float(pos[0])

@@ -8,7 +8,7 @@ from dataclasses import dataclass
 import time
 
 import draccus
-from lerobot.errors import DeviceNotConnectedError
+from lerobot.utils.errors import DeviceNotConnectedError
 
 # 关键：导入以触发“注册”（不要删除）
 from lerobot.robots import (  # noqa: F401
