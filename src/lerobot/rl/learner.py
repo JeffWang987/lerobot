@@ -68,6 +68,7 @@ from lerobot.configs import parser
 from lerobot.configs.train import TrainRLServerPipelineConfig
 from lerobot.datasets.factory import make_dataset
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
+from lerobot.datasets.transforms import JointToEEDeltaConfig, JointToEEDeltaDataset
 from lerobot.policies.factory import make_policy
 from lerobot.policies.sac.modeling_sac import SACPolicy
 from lerobot.rl.buffer import ReplayBuffer, concatenate_batch_transitions
@@ -1009,6 +1010,34 @@ def initialize_offline_replay_buffer(
     if not cfg.resume:
         logging.info("make_dataset offline buffer")
         offline_dataset = make_dataset(cfg)
+        # Optional: convert joint-space offline actions to EE-delta 4D actions
+        try:
+            ik_cfg = cfg.env.processor.inverse_kinematics
+            if ik_cfg is not None and cfg.policy.output_features[ACTION].shape[0] <= 4:
+                # Assume left arm occupies first 7 dims in observation.state: 6 joints + 1 gripper
+                joint_indices = list(range(0, 6))
+                gripper_index = 6
+                step_sizes = {
+                    "x": ik_cfg.end_effector_step_sizes["x"],
+                    "y": ik_cfg.end_effector_step_sizes["y"],
+                    "z": ik_cfg.end_effector_step_sizes["z"],
+                }
+                gripper_speed = 20.0
+                if cfg.env.processor is not None and hasattr(cfg.env.processor, "max_gripper_pos"):
+                    # keep speed factor default; max_gripper_pos is separate bound used downstream
+                    pass
+                jt_cfg = JointToEEDeltaConfig(
+                    urdf_path=ik_cfg.urdf_path,
+                    target_frame_name=ik_cfg.target_frame_name,
+                    joint_indices=joint_indices,
+                    gripper_index=gripper_index,
+                    step_sizes=step_sizes,
+                    gripper_speed_factor=gripper_speed,
+                )
+                offline_dataset = JointToEEDeltaDataset(offline_dataset, jt_cfg)
+                logging.info("Wrapped offline dataset with JointToEEDeltaDataset (4D EE delta actions)")
+        except Exception as e:
+            logging.warning(f"Could not wrap offline dataset with JointToEEDeltaDataset: {e}")
     else:
         logging.info("load offline dataset")
         dataset_offline_path = os.path.join(cfg.output_dir, "dataset_offline")

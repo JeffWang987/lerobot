@@ -307,7 +307,7 @@ class InverseKinematicsEEToJoints(RobotActionProcessorStep):
         t_des[:3, 3] = [x, y, z]
 
         # Compute inverse kinematics
-        q_target = self.kinematics.inverse_kinematics(self.q_curr, t_des)
+        q_target = self.kinematics.inverse_kinematics(self.q_curr, t_des,position_weight=1.0,orientation_weight=0.0)
         self.q_curr = q_target
 
         # TODO: This is sentitive to order of motor_names = q_target mapping

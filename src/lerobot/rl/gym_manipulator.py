@@ -521,7 +521,7 @@ def make_processors(
                 motor_names=motor_names,
                 # motor_names=arm_motor_names,
                 # motor_names=ik_joint_names,
-                use_latched_reference=False,
+                use_latched_reference=False,#测试一下True
                 use_ik_solution=True,
             ),
             EEBoundsAndSafety(

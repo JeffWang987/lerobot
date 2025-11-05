@@ -158,6 +158,7 @@ python src/lerobot/scripts/test_piper_ee_observation.py \
   --robot.cameras='{"front": {"type": "orbbec_dabai", "serial_number_or_name": "CC1B25100EM", "width": 640, "height": 480, "fps": 30}, "left": {"type": "intelrealsense", "serial_number_or_name": "242522071187", "width": 640, "height": 480, "fps": 30}, "right": {"type": "intelrealsense", "serial_number_or_name": "327122075682", "width": 640, "height": 480, "fps": 30}}' \
   --rate_hz=10 --duration_s=5 --print_every=5 \
   --save_images=true
+  
 
 参数说明：
   --save_images: 是否保存相机图像（默认: true）

@@ -1,5 +1,96 @@
 #!/usr/bin/env python
 
+# Copyright 2025 The HuggingFace Inc. team. All rights reserved.
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Sequence
+
+import numpy as np
+import torch
+
+from lerobot.model.kinematics import RobotKinematics
+from lerobot.utils.constants import ACTION
+
+
+@dataclass
+class JointToEEDeltaConfig:
+    urdf_path: str
+    target_frame_name: str
+    joint_indices: Sequence[int]  # indices in observation.state for arm joints (len=6)
+    gripper_index: int  # index in observation.state for gripper position
+    step_sizes: dict[str, float]  # {"x":..., "y":..., "z":...}
+    gripper_speed_factor: float = 20.0  # matches GripperVelocityToJoint default
+    clamp_abs: float = 1.0  # clamp ee deltas after normalization
+
+
+class JointToEEDeltaDataset:
+    """
+    Dataset wrapper that converts joint-space actions/observations into 4D EE delta actions:
+    [delta_x, delta_y, delta_z, gripper_vel]
+
+    The delta is computed from consecutive frames' joint observations using FK.
+    It preserves all original keys and replaces the ACTION with the 4D delta tensor.
+    """
+
+    def __init__(self, base_dataset, cfg: JointToEEDeltaConfig):
+        self.dataset = base_dataset
+        self.cfg = cfg
+        self.kin = RobotKinematics(
+            urdf_path=cfg.urdf_path,
+            target_frame_name=cfg.target_frame_name,
+            joint_names=[f"joint{i+1}" for i in range(len(cfg.joint_indices))],
+        )
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, idx: int) -> dict[str, Any]:
+        cur = dict(self.dataset[idx])
+
+        # Try to use next frame in same episode; if last frame in episode, use zero delta
+        if idx < len(self.dataset) - 1:
+            nxt = self.dataset[idx + 1]
+            if nxt["episode_index"] == cur["episode_index"]:
+                cur_state = cur["observation.state"].clone() if isinstance(cur["observation.state"], torch.Tensor) else torch.tensor(cur["observation.state"])  # type: ignore[index]
+                nxt_state = nxt["observation.state"].clone() if isinstance(nxt["observation.state"], torch.Tensor) else torch.tensor(nxt["observation.state"])  # type: ignore[index]
+
+                q_cur = cur_state[self.cfg.joint_indices].detach().cpu().numpy().astype(float)
+                q_nxt = nxt_state[self.cfg.joint_indices].detach().cpu().numpy().astype(float)
+
+                # FK to positions
+                t_cur = self.kin.forward_kinematics(q_cur)
+                t_nxt = self.kin.forward_kinematics(q_nxt)
+                p_cur = t_cur[:3, 3]
+                p_nxt = t_nxt[:3, 3]
+
+                dp = (p_nxt - p_cur)
+                # Normalize by step sizes to match MapDeltaActionToRobotActionStep expectations
+                dx = dp[0] / self.cfg.step_sizes["x"]
+                dy = dp[1] / self.cfg.step_sizes["y"]
+                dz = dp[2] / self.cfg.step_sizes["z"]
+
+                # Gripper velocity: approximate from position change divided by speed factor
+                g_cur = float(cur_state[self.cfg.gripper_index].item())
+                g_nxt = float(nxt_state[self.cfg.gripper_index].item())
+                g_vel = (g_nxt - g_cur) / self.cfg.gripper_speed_factor
+            else:
+                dx = dy = dz = g_vel = 0.0
+        else:
+            dx = dy = dz = g_vel = 0.0
+
+        # Clamp deltas to reasonable range
+        dx = float(np.clip(dx, -self.cfg.clamp_abs, self.cfg.clamp_abs))
+        dy = float(np.clip(dy, -self.cfg.clamp_abs, self.cfg.clamp_abs))
+        dz = float(np.clip(dz, -self.cfg.clamp_abs, self.cfg.clamp_abs))
+        g_vel = float(np.clip(g_vel, -1.0, 1.0))
+
+        cur[ACTION] = torch.tensor([dx, dy, dz, g_vel], dtype=torch.float32)
+        return cur
+
+#!/usr/bin/env python
+
 # Copyright 2024 The HuggingFace Inc. team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");

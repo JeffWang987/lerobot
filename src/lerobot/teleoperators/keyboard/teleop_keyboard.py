@@ -67,6 +67,9 @@ class KeyboardTeleop(Teleoperator):
         self._inc_keys = ["q", "w", "e", "a", "s", "d"]  # 1..6 +
         self._dec_keys = ["u", "i", "o", "j", "k", "l"]  # 1..6 -
 
+        # —— 新增：人为介入锁存开关 —— 
+        self._intervention_latched: bool = False
+
     # -------- Teleoperator 必需接口 --------
     @property
     def action_features(self) -> dict:
@@ -154,27 +157,33 @@ class KeyboardTeleop(Teleoperator):
     def get_teleop_events(self) -> dict[str, Any]:
         """
         供 AddTeleopEventsAsInfoStep 调用。返回以下键：
-        - TeleopEvents.IS_INTERVENTION  : 是否人为介入（按住任一控制键）
-        - TeleopEvents.TERMINATE_EPISODE: 是否终止本回合
-        - TeleopEvents.SUCCESS          : 是否标记成功
-        - TeleopEvents.RERECORD_EPISODE : 是否重录
+        - TeleopEvents.IS_INTERVENTION  : 是否人为介入（被“锁存”）
+        逻辑：任意关节增减键或夹爪键（不含 'p'）被按下 -> 置 True 并保持
+            按下 'p' -> 清为 False
+        - TeleopEvents.TERMINATE_EPISODE: 是否终止本回合（按 'y'）
+        - TeleopEvents.SUCCESS          : 是否标记成功（按 'u'）
+        - TeleopEvents.RERECORD_EPISODE : 是否重录（按 'i'）
         """
-        # 刷新键盘队列
+        # 刷新键盘队列，更新 current_pressed
         self._drain_pressed_keys()
 
-        # 人为介入：任一关节增减键或夹爪键被按住
-        is_intervention = any(
-            self._is_pressed(k) for k in (self._inc_keys + self._dec_keys + ["r", "p"])
-        )
+        # —— 复位逻辑优先：按下 'p' 清除锁存 —— 
+        if self._is_pressed("p"):
+            self._intervention_latched = False
+        else:
+            # —— 置真逻辑：任意关节增减或夹爪“增大”键（'r'）触发锁存 —— 
+            # 注意：为避免同一 tick 中 'p' 又清又置，这里显式排除 'p'
+            trigger_keys = self._inc_keys + self._dec_keys + ["r"]
+            if any(self._is_pressed(k) for k in trigger_keys):
+                self._intervention_latched = True
 
-        # 终止/成功/重录：给出一组热键（你可按需改）
-        # 例如：x=终止，y=成功，t=重录
-        terminate_episode = self._is_pressed("x")
-        success = self._is_pressed("y")
-        rerecord = self._is_pressed("t")
+        # 终止/成功/重录：热键
+        terminate_episode = self._is_pressed("r")
+        success = self._is_pressed("t")
+        rerecord = self._is_pressed("y")
 
         return {
-            TeleopEvents.IS_INTERVENTION: bool(is_intervention),
+            TeleopEvents.IS_INTERVENTION: self._intervention_latched,
             TeleopEvents.TERMINATE_EPISODE: bool(terminate_episode),
             TeleopEvents.SUCCESS: bool(success),
             TeleopEvents.RERECORD_EPISODE: bool(rerecord),
@@ -227,6 +236,7 @@ class KeyboardEndEffectorTeleop(KeyboardTeleop):
         Config is optional since this is a minimal implementation.
         """
         super().__init__(config)
+        self._intervention_latched: bool = False
         # Optional: keep a queue for misc keys if needed later
         # self.misc_keys_queue = None
 
@@ -313,7 +323,7 @@ class KeyboardEndEffectorTeleop(KeyboardTeleop):
     def get_teleop_events(self) -> dict[str, Any]:
         """
         供 AddTeleopEventsAsInfoStep 调用。返回以下键：
-        - TeleopEvents.IS_INTERVENTION  : 是否人为介入（按住任一 EE 控制键）
+        - TeleopEvents.IS_INTERVENTION  : 锁存的人为介入标志（按任一 EE 控制键置 True，按 'p' 清零）
         - TeleopEvents.TERMINATE_EPISODE: 是否终止本回合（按 'x'）
         - TeleopEvents.SUCCESS          : 是否标记成功（按 'y'）
         - TeleopEvents.RERECORD_EPISODE : 是否重录（按 't'）
@@ -321,20 +331,22 @@ class KeyboardEndEffectorTeleop(KeyboardTeleop):
         # 刷新键盘队列，确保 current_pressed 是最新的
         self._drain_pressed_keys()
 
-        # 人为介入：任一 EE 控制键被按住（平移或夹爪）
+        # --- 触发集合：任一 EE 控制键（平移或夹爪）被按住则置位锁存标志 ---
         control_keys = ["a", "A", "d", "D", "w", "W", "s", "S", "q", "Q", "e", "E", "c", "C", "v", "V"]
-        is_intervention = any(self._is_pressed(k) for k in control_keys)
-        # if self._is_pressed("a") or self._is_pressed("A"):
-        #     # dx = -1.0
-        #     print("当前is_intervention按下a")
+        if any(self._is_pressed(k) for k in control_keys):
+            self._intervention_latched = True
+
+        # --- 复位键：按下 'p'（大小写均可）则清除锁存 ---
+        if self._is_pressed("p") or self._is_pressed("P"):
+            self._intervention_latched = False
+
         # 事件热键（与父类一致，便于统一 pipeline）
         terminate_episode = self._is_pressed("x")
         success = self._is_pressed("y")
         rerecord = self._is_pressed("t")
 
         return {
-            TeleopEvents.IS_INTERVENTION: bool(is_intervention),
-            # TeleopEvents.IS_INTERVENTION: False,
+            TeleopEvents.IS_INTERVENTION: self._intervention_latched,
             TeleopEvents.TERMINATE_EPISODE: bool(terminate_episode),
             TeleopEvents.SUCCESS: bool(success),
             TeleopEvents.RERECORD_EPISODE: bool(rerecord),

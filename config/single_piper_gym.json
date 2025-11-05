@@ -92,6 +92,6 @@
     "push_to_hub": false
   },
 
-  "mode": "record",              
+  "mode": null,              
   "device": "cpu"
 }
